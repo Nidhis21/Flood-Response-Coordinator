@@ -1,0 +1,174 @@
+{
+	"info": {
+		"name": "Flood Response",
+		"_postman_id": "flood-response-coordinator-v1",
+		"description": "7-agent autonomous flood response coordinator system for Lakhimpur, Assam.\n\nBase URL: http://localhost:8000\n\nAll endpoints are pre-configured. Import this collection and start testing immediately.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"variable": [
+		{
+			"key": "baseUrl",
+			"value": "http://localhost:8000",
+			"type": "string"
+		}
+	],
+	"item": [
+		{
+			"name": "Resources",
+			"item": [
+				{
+					"name": "Get All Resources",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/resources",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "resources"]
+						},
+						"description": "Returns all resources (boats, helicopters, trucks, medical teams) from the database with GPS coordinates, status, and inventory."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Shelters",
+			"item": [
+				{
+					"name": "Get All Shelters",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/shelters",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "shelters"]
+						},
+						"description": "Returns all evacuation shelters with capacity, current occupancy, and supply stock levels (food, water, medicine)."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Flood Alerts",
+			"item": [
+				{
+					"name": "Get All Alerts",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/alerts",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "alerts"]
+						},
+						"description": "Returns all flood alerts sorted newest first. Includes severity level, discharge Q value, FHI score, and affected revenue circles."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "SOS Events",
+			"item": [
+				{
+					"name": "Get All SOS Events",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/sos",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "sos"]
+						},
+						"description": "Returns all SOS distress events sorted newest first. Includes phone, GPS, people count, triage level, and assignment status."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Audit Log",
+			"item": [
+				{
+					"name": "Get Audit Log",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/audit-log",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "audit-log"]
+						},
+						"description": "Returns all audit log entries sorted newest first. Every agent decision is logged here — conflict resolutions include both scores and the explanation."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Twilio SMS",
+			"item": [
+				{
+					"name": "Inbound SMS (Twilio Webhook)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/x-www-form-urlencoded"
+							}
+						],
+						"body": {
+							"mode": "urlencoded",
+							"urlencoded": [
+								{
+									"key": "From",
+									"value": "+919876543210",
+									"description": "Caller phone number (Twilio sends this automatically)",
+									"type": "text"
+								},
+								{
+									"key": "Body",
+									"value": "27.23,94.10,5,injured elderly person",
+									"description": "SMS body — format: lat,lng,people_count,injury_description",
+									"type": "text"
+								}
+							]
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/twilio/inbound",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "twilio", "inbound"]
+						},
+						"description": "Simulates an inbound SMS from Twilio. Parses the SMS body, creates an SOS event in the DB, pushes to sos_queue, and broadcasts sos_created via WebSocket.\n\nSMS format: \"lat,lng,people_count,injury_description\"\nExample: \"27.23,94.10,5,injured elderly person\""
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "WebSocket",
+			"item": [
+				{
+					"name": "Dashboard WebSocket",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "ws://localhost:8000/ws",
+							"protocol": "ws",
+							"host": ["localhost"],
+							"port": "8000",
+							"path": ["ws"]
+						},
+						"description": "WebSocket endpoint for real-time dashboard updates. Connect using Postman's WebSocket tab (not this HTTP request).\n\nURL: ws://localhost:8000/ws\n\nEvents you will receive:\n- flood_alert\n- resource_moved\n- sos_created\n- dispatch_assigned\n- conflict_raised\n- conflict_resolved\n- shelter_updated\n- sms_sent\n\nEach event is JSON: { \"event\": \"<type>\", \"data\": { ... } }"
+					},
+					"response": []
+				}
+			]
+		}
+	]
+}
