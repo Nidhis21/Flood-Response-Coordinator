@@ -1,0 +1,26 @@
+{
+  "_comment": "Real data from the 2012 Lakhimpur flood — Ranganadi river basin. Source: FLEWS paper. Used as offline fallback when OFFLINE_MODE=true so Perception Agent does not need Open-Meteo API.",
+  "river": "Ranganadi",
+  "district": "Lakhimpur",
+  "state": "Assam",
+  "timestamp": "2012-06-28T06:00:00+05:30",
+  "rainfall_intensity_mm_per_hr": 42.5,
+  "watershed_area_hectares": 134600,
+  "runoff_coefficient": 0.233,
+  "current_water_level_m": 94.45,
+  "danger_level_m": 95.02,
+  "highest_flood_level_m": 95.94,
+  "station": "Badatighat",
+  "latitude": 27.23,
+  "longitude": 94.10,
+  "computed_discharge_cumecs": null,
+  "revenue_circles_affected": [
+    "North Lakhimpur",
+    "Nowboicha",
+    "Dhakuakhana",
+    "Ghilamara"
+  ],
+  "soil_type": "Alluvial (Brahmaputra floodplain)",
+  "land_cover": "Agricultural with scattered settlements",
+  "notes": "The Ranganadi breached at multiple points during the 2012 event. Water level at Badatighat crossed danger level at 95.02m and reached HFL of 95.94m. These numbers are used to seed the Prediction Agent's rational model computation."
+}

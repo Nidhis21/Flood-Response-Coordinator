@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+langchain-google-genai
+langgraph
+langchain-core
+twilio
+python-dotenv
+websockets
