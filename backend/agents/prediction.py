@@ -97,7 +97,6 @@ def compute_geojson_polygon(center_lat: float, center_lng: float, fhi: float, af
         }
     }
 
-
 async def run():
     """
     Main loop for the Prediction Agent.
