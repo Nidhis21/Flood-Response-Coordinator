@@ -1,461 +1,395 @@
 """
-=============================================================================
-MEDICAL AGENT — Medical Triage and Emergency Health Response
-=============================================================================
-Owner: Member 3
-=============================================================================
-
-SUBSCRIBES TO:
-  - sos_queue       ←  reads new SOS events from Community Liaison Agent
-  - resolved_queue  ←  reads conflict resolutions from Conflict Resolution Agent
-
-PUBLISHES TO:
-  - dispatch_queue  →  pushes medical dispatch assignments for SMS confirmation
-  - conflict_queue  →  pushes when resource conflict detected with another agent
-
-BROADCAST EVENTS FIRED:
-  - dispatch_assigned  →  fired when medical team is assigned to an SOS
-    Payload: { mission_id, sos_id, resource_id, resource_name, eta_minutes }
-
-=============================================================================
-TODO — Implementation Checklist
-=============================================================================
-  1. Run as async loop reading from sos_queue
-  2. For each SOS event, perform medical triage:
-     - Re-assess triage_level based on injury_description using Gemini LLM
-     - Triage levels: 1=critical, 2=severe, 3=moderate, 4=minor, 5=minimal
-     - Update triage_level in sos_events table
-  3. If triage_level <= 2 (critical/severe), dispatch MT1 medical team:
-     - Find MT1 in resources table, check if available
-     - If MT1 is dispatched, check if helicopter H1 can carry medical supplies
-  4. If chosen resource is also being requested by Rescue Agent:
-     - Push conflict to conflict_queue with medical urgency details
-     - Medical cases with triage_level=1 should score high on irreversibility
-     - Wait for resolution on resolved_queue
-  5. If no conflict, assign medical resource:
-     - Create Mission record linking SOS to MT1
-     - Update SOS status to "assigned"
-  6. Push dispatch info to dispatch_queue for SMS confirmation
-  7. Broadcast EVENT_DISPATCH_ASSIGNED to dashboard
-  8. Track medical supplies consumed per mission
-  9. Alert Logistics Agent when medical supplies run low
-  10. Log all triage decisions to audit_log for medical review
-=============================================================================
-"""
-
-import asyncio
-import logging
-
-logger = logging.getLogger("agent.medical")
-
-
-async def run():
-    """
-    Main loop for the Medical Agent.
-    Reads SOS events, performs triage, dispatches medical resources.
-    """
-    logger.info("Medical Agent started (stub — awaiting implementation)")
-    while True:
-        # TODO: Implement medical triage and dispatch loop
-        await asyncio.sleep(60)
-
-"""
 ===========================================================================
 MEDICAL AGENT — Medical Triage and Dispatch
 ===========================================================================
 Owner: Member 3
-===========================================================================
 
-SUBSCRIBES TO:
-  - sos_queue      ←  reads new SOS events from Community Liaison Agent
-  - resolved_queue ←  reads conflict resolutions from Conflict Resolution Agent
+SUBSCRIBES TO (via fan-out from rescue_agent.run()):
+  - sos_queue      ←  every SOS is forwarded here by rescue_agent.run()
+  - resolved_queue ←  every resolution is forwarded here by rescue_agent.run()
 
 PUBLISHES TO:
-  - dispatch_queue  →  pushes dispatch assignments for SMS confirmation
-  - conflict_queue  →  pushes when resource conflict detected with another agent
+  - dispatch_queue  →  medical dispatch assignments for Agent 7 (SMS)
+  - conflict_queue  →  resource conflicts for Agent 6
 
+DATABASE TABLES USED (from backend/models.py):
+  - Resource  : type="medical_team" (or "helicopter"/"truck"), name, lat, lng, status
+  - SOSEvent  : lat, lng, people_count, injury_description, triage_level,
+                status, assigned_resource_id
+  - Mission   : sos_event_id, resource_id, status, shelter_id
+
+QUEUE MESSAGE FORMAT (from main.py Twilio webhook):
+  sos_queue items have:
+    {
+      "sos_id":             int,
+      "phone":              str,
+      "lat":                float,
+      "lng":                float,
+      "people_count":       int,
+      "injury_description": str,
+      "triage_level":       int   # 1=critical … 5=minor (set by Agent 7)
+    }
+
+TRIAGE LEVELS (START system):
+  1 → IMMEDIATE  (life-threatening — minutes matter)
+  2 → IMMEDIATE  (serious — needs help soon)
+  3 → DELAYED    (stable — can wait up to 60 min)
+  4 → DELAYED    (minor injuries)
+  5 → MINOR      (walking wounded)
+
+NOTE — NO run() queue ownership:
+  This agent does NOT call sos_queue.get() directly.
+  rescue_agent.run() owns both sos_queue and resolved_queue and calls
+  medical_agent.handle_sos_message() / handle_resolution_message()
+  after reading each item.  This prevents the single-consumer problem
+  where only one agent would see each message.
 ===========================================================================
 """
 
 import asyncio
 import logging
-import math
 from datetime import datetime, timezone
 
 from backend.database import SessionLocal, Base, engine
-from backend.queues import sos_queue, dispatch_queue, conflict_queue, resolved_queue
+from backend.queues import dispatch_queue, conflict_queue
 from backend.models import SOSEvent, Resource, Mission
+from backend.broadcast import broadcast, EVENT_DISPATCH_ASSIGNED
+from backend.utils import haversine
 
 logger = logging.getLogger("agent.medical")
 
-# ── Make sure our tables exist in the database ──────────────────────────────
-try:
-    Base.metadata.create_all(bind=engine)
-    logger.info("Medical agent tables initialized successfully.")
-except Exception as e:
-    logger.error(f"Failed to initialize medical tables: {e}")
+Base.metadata.create_all(bind=engine)
 
 
 # ============================================================================
-# START TRIAGE CLASSIFICATION
-# START = Simple Triage and Rapid Treatment
-# Used by paramedics worldwide to sort casualties by urgency
+# CONSTANTS
 # ============================================================================
-def start_triage(sos_event: dict) -> str:
-    """
-    Classifies the medical urgency of an SOS event using START triage.
 
-    Four levels (from most to least urgent):
-      IMMEDIATE  — life-threatening, needs help within minutes
-                   Examples: unconscious, not breathing, severe bleeding
-      DELAYED    — serious but stable, can wait 30-60 mins
-                   Examples: broken bones, moderate wounds
-      MINOR      — walking wounded, can wait hours
-                   Examples: small cuts, minor injuries
-      DECEASED   — no signs of life
+# Human-readable label for each triage level
+TRIAGE_LABEL = {
+    1: "IMMEDIATE",
+    2: "IMMEDIATE",
+    3: "DELAYED",
+    4: "DELAYED",
+    5: "MINOR",
+}
 
-    Returns one of: "immediate", "delayed", "minor", "deceased"
-    """
-    injury = sos_event.get("injury_description", "").lower()
-    triage_level = sos_event.get("triage_level", "").lower()
-    people_count = sos_event.get("people_count", 1)
-    is_breathing = sos_event.get("is_breathing", True)
-    is_conscious = sos_event.get("is_conscious", True)
+# Vehicle type preference by triage level
+# Critical (1-2): helicopter fastest, then dedicated medical_team, then truck
+# Delayed  (3-4): medical_team first (best equipped), truck as backup
+# Minor    (5):   truck sufficient
+MEDICAL_VEHICLE_PRIORITY = {
+    1: ["helicopter", "medical_team", "truck"],
+    2: ["helicopter", "medical_team", "truck"],
+    3: ["medical_team", "truck", "helicopter"],
+    4: ["medical_team", "truck"],
+    5: ["truck", "medical_team"],
+}
 
-    # If triage level was already set by the community liaison agent, use it
-    if triage_level in ["immediate", "delayed", "minor", "deceased"]:
-        return triage_level
+# Travel speeds in km/hr — used for ETA
+VEHICLE_SPEEDS = {
+    "helicopter":   150,
+    "medical_team":  40,
+    "truck":         40,
+    "boat":          20,
+}
 
-    # ── Check for DECEASED signs ────────────────────────────────────────
-    if not is_breathing and not is_conscious:
-        return "deceased"
-
-    # ── Check for IMMEDIATE (life-threatening keywords) ─────────────────
-    immediate_keywords = [
-        "unconscious", "not breathing", "severe bleeding", "chest pain",
-        "heart attack", "stroke", "drowning", "trapped underwater",
-        "crush injury", "head injury", "not responding", "critical"
-    ]
-    if any(word in injury for word in immediate_keywords):
-        return "immediate"
-
-    # Not breathing is always immediate
-    if not is_breathing:
-        return "immediate"
-
-    # Large groups in dangerous situations → treat as immediate
-    if people_count >= 5 and not is_conscious:
-        return "immediate"
-
-    # ── Check for DELAYED (serious but stable keywords) ──────────────────
-    delayed_keywords = [
-        "broken", "fracture", "bleeding", "wound", "burn", "pain",
-        "fever", "vomiting", "diabetic", "elderly", "pregnant",
-        "cannot walk", "injured"
-    ]
-    if any(word in injury for word in delayed_keywords):
-        return "delayed"
-
-    # ── MINOR — everything else ──────────────────────────────────────────
-    return "minor"
+# Keywords that signal a medical component even in a "rescue" type SOS
+MEDICAL_KEYWORDS = [
+    "injured", "bleeding", "unconscious", "sick", "pain",
+    "hurt", "wound", "medicine", "insulin", "breathing",
+    "fracture", "burn", "seizure", "stroke", "cardiac",
+]
 
 
 # ============================================================================
-# CHECK IF SOS NEEDS MEDICAL (has medical component)
+# HELPER — ETA CALCULATION
+# ============================================================================
+def calculate_eta(distance_km: float, vehicle_type: str) -> int:
+    """Return ETA in minutes. Minimum 2 minutes."""
+    speed = VEHICLE_SPEEDS.get(vehicle_type, 40)
+    return max(int((distance_km / speed) * 60), 2)
+
+
+# ============================================================================
+# STEP 1 — DOES THIS SOS NEED MEDICAL RESPONSE?
 # ============================================================================
 def needs_medical(sos_event: dict) -> bool:
     """
     Returns True if this SOS has a medical component.
-    Even rescue SOSes can have medical needs (injured trapped people).
+
+    Rules:
+      - event type is explicitly "medical" or "medical_only" → always True
+      - triage_level ≤ 3 → serious enough to warrant medical attention
+      - injury_description contains a medical keyword
+      - people_count ≥ 5 (likely someone needs medical help in a large group)
+
+    Called before any DB work — cheap filter.
     """
-    sos_type = sos_event.get("type", "").lower()
-    injury = sos_event.get("injury_description", "").lower()
+    event_type   = sos_event.get("type", "general").lower()
+    triage       = sos_event.get("triage_level", 5)
+    description  = sos_event.get("injury_description", "").lower()
+    people_count = sos_event.get("people_count", 1)
 
-    # Explicitly medical
-    if sos_type in ["medical", "medical_only"]:
+    if event_type in ("medical", "medical_only"):
         return True
-
-    # Has an injury description — medical help needed
-    if injury and injury not in ["none", "no injury", ""]:
+    if triage <= 3:
         return True
-
-    # Rescue type but mentions injuries
-    medical_keywords = [
-        "injured", "hurt", "bleeding", "unconscious", "sick",
-        "medicine", "insulin", "breathing", "pain", "wound"
-    ]
-    if any(word in injury for word in medical_keywords):
+    if any(word in description for word in MEDICAL_KEYWORDS):
+        return True
+    if people_count >= 5:
         return True
 
     return False
 
 
 # ============================================================================
-# HAVERSINE — same function as rescue agent (distance calculator)
+# STEP 2 — FIND BEST MEDICAL RESOURCE
 # ============================================================================
-def haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Calculate distance in kilometres between two GPS points."""
-    R = 6371
-    lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-    a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
-    return R * 2 * math.asin(math.sqrt(a))
-
-
-def calculate_eta_minutes(distance_km: float, resource_type: str) -> int:
-    """Estimate arrival time in minutes based on resource type."""
-    speeds = {"ambulance": 60, "medical_team": 40, "helicopter": 150, "boat": 20}
-    speed = speeds.get(resource_type.lower(), 40)
-    return max(int((distance_km / speed) * 60), 2)
-
-
-# ============================================================================
-# FIND NEAREST MEDICAL RESOURCE
-# Prioritises by triage level — Immediate gets helicopters/ambulances first
-# ============================================================================
-def find_nearest_medical_resource(
-    sos_lat: float, sos_lon: float, triage: str, db
-) -> Resource | None:
+def find_best_medical_resource(sos_lat: float, sos_lng: float,
+                                triage_level: int, db):
     """
-    Finds the closest available medical resource.
-    For IMMEDIATE cases: prefers ambulance or helicopter (fastest)
-    For DELAYED/MINOR cases: any medical team will do
+    Find the best available resource for a medical dispatch.
+
+    Algorithm:
+      1. Get vehicle priority list for this triage level.
+      2. For each type, query DB for available resources.
+      3. Sort by distance (nearest first).
+         — No NDRF/SDRF name prefix in seed data, so distance is the sole
+           tiebreaker within a vehicle type.
+      4. Return first match.
+
+    Returns:
+      (resource, vehicle_type, distance_km)  on success
+      (None, None, None)                      if nothing available
     """
-    # Get all available medical resources
-    available = (
-        db.query(Resource)
-        .filter(Resource.status == "available")
-        .filter(Resource.resource_type.in_(["ambulance", "medical_team", "helicopter"]))
-        .all()
-    )
+    vehicle_types = MEDICAL_VEHICLE_PRIORITY.get(triage_level, ["medical_team", "truck"])
 
-    if not available:
-        return None
+    for vehicle_type in vehicle_types:
+        available = (
+            db.query(Resource)
+            .filter(Resource.type == vehicle_type)
+            .filter(Resource.status == "available")
+            .all()
+        )
 
-    nearest = None
-    shortest_score = float("inf")
+        if not available:
+            logger.info(f"No available {vehicle_type} — trying next type")
+            continue
 
-    for resource in available:
-        distance = haversine(resource.latitude, resource.longitude, sos_lat, sos_lon)
+        available.sort(
+            key=lambda r: haversine(r.lat, r.lng, sos_lat, sos_lng)
+        )
+        best = available[0]
+        distance_km = haversine(best.lat, best.lng, sos_lat, sos_lng)
 
-        # For IMMEDIATE cases, strongly prefer ambulances/helicopters
-        # Give them a big distance bonus to rank them first
-        if triage == "immediate":
-            if resource.resource_type in ["ambulance", "helicopter"]:
-                distance = distance * 0.5  # Appears twice as close in ranking
+        logger.info(
+            f"Medical resource match: '{best.name}' ({vehicle_type}) "
+            f"at {distance_km:.2f} km | "
+            f"triage={TRIAGE_LABEL.get(triage_level, 'DELAYED')}"
+        )
+        return best, vehicle_type, distance_km
 
-        if distance < shortest_score:
-            shortest_score = distance
-            nearest = resource
-
-    return nearest
+    return None, None, None
 
 
 # ============================================================================
-# DISPATCH MEDICAL RESOURCE
+# STEP 3 — WRITE MEDICAL DISPATCH TO DATABASE
 # ============================================================================
-def dispatch_medical_resource(sos_event: dict, resource: Resource, triage: str, db) -> Mission:
+def dispatch_medical_resource(sos_event: dict, resource: Resource,
+                               vehicle_type: str, distance_km: float, db):
     """
-    Assigns the medical resource to the SOS event.
-    Updates database: resource → dispatched, creates Mission, updates SOS status.
+    Persist the medical dispatch to the database.
+
+    Field names match models.py exactly:
+      Resource.status                  → "dispatched"
+      SOSEvent.status                  → "assigned"
+      SOSEvent.assigned_resource_id    → resource.id
+      Mission (new row)                → status="en_route", shelter_id=None
+
+    Key mapping: sos_event["sos_id"] → SOSEvent.id (FK in Mission and SOSEvent)
     """
-    now = datetime.now(timezone.utc)
+    sos_db_id = sos_event.get("sos_id")   # set by main.py Twilio webhook
 
-    sos_lat = sos_event.get("latitude", 0.0)
-    sos_lon = sos_event.get("longitude", 0.0)
-
-    # Mark resource as dispatched
     resource.status = "dispatched"
-    resource.updated_at = now
 
-    distance_km = haversine(resource.latitude, resource.longitude, sos_lat, sos_lon)
-    eta_minutes = calculate_eta_minutes(distance_km, resource.resource_type)
-
-    # Create mission record
     mission = Mission(
-        sos_event_id=sos_event.get("id"),
+        sos_event_id=sos_db_id,
         resource_id=resource.id,
         status="en_route",
-        assigned_at=now,
-        eta_minutes=eta_minutes,
-        destination_latitude=sos_lat,
-        destination_longitude=sos_lon,
-        notes=f"Triage: {triage.upper()}",  # Include triage level in mission notes
+        shelter_id=None,
     )
     db.add(mission)
 
-    # Update SOS status
-    sos_db_record = db.query(SOSEvent).filter(SOSEvent.id == sos_event.get("id")).first()
-    if sos_db_record:
-        sos_db_record.status = "assigned"
-        sos_db_record.triage_level = triage
-        sos_db_record.updated_at = now
+    sos_record = db.query(SOSEvent).filter(SOSEvent.id == sos_db_id).first()
+    if sos_record:
+        sos_record.status = "assigned"
+        sos_record.assigned_resource_id = resource.id
 
     db.commit()
     db.refresh(mission)
     db.refresh(resource)
 
-    logger.info(
-        f"Medical dispatch: {resource.resource_type} '{resource.name}' → "
-        f"SOS {sos_event.get('id')} | Triage: {triage.upper()} | ETA: {eta_minutes} mins"
-    )
+    eta_minutes = calculate_eta(distance_km, vehicle_type)
+    triage_label = TRIAGE_LABEL.get(sos_event.get("triage_level", 3), "DELAYED")
 
-    return mission
+    logger.info(
+        f"MEDICAL DISPATCH: '{resource.name}' ({vehicle_type}) "
+        f"→ SOS #{sos_db_id} | Triage={triage_label} | ETA ~{eta_minutes} min"
+    )
+    return mission, eta_minutes
 
 
 # ============================================================================
-# PROCESS ONE MEDICAL SOS EVENT
+# STEP 4 — PROCESS ONE MEDICAL SOS (core pipeline)
 # ============================================================================
 async def process_medical_sos(sos_event: dict):
     """
-    Full pipeline for one medical SOS event:
-      1. Check if it has a medical component
-      2. Run START triage to classify urgency
-      3. Find nearest appropriate medical resource
-      4. Dispatch or escalate conflict
-      5. Push to dispatch_queue for SMS confirmation
+    Full medical pipeline for one SOS message.
+
+    Steps:
+      1. Check if medical response is needed (needs_medical filter)
+      2. Find best available medical resource for this triage level
+      3. Re-check resource availability (race condition guard)
+      4. Dispatch — write to DB
+      5. Push to dispatch_queue (→ Agent 7 for SMS)
+      6. Broadcast to dashboard via broadcast()
     """
-    sos_id = sos_event.get("id", "unknown")
-    sos_lat = sos_event.get("latitude", 0.0)
-    sos_lon = sos_event.get("longitude", 0.0)
+    sos_id       = sos_event.get("sos_id", "unknown")
+    sos_lat      = sos_event.get("lat", 0.0)
+    sos_lng      = sos_event.get("lng", 0.0)
+    triage_level = sos_event.get("triage_level", 3)
+    triage_label = TRIAGE_LABEL.get(triage_level, "DELAYED")
 
-    logger.info(f"Medical Agent processing SOS: {sos_id}")
-
-    # ── Step 1: Does this need medical help? ─────────────────────────────
+    # ── 1. Quick filter ───────────────────────────────────────────────────
     if not needs_medical(sos_event):
-        logger.info(f"SOS {sos_id} has no medical component — skipping")
+        logger.debug(f"SOS #{sos_id} has no medical component — skipping")
         return
 
-    # ── Step 2: Run START triage ─────────────────────────────────────────
-    triage = start_triage(sos_event)
-    logger.info(f"SOS {sos_id} triage classification: {triage.upper()}")
+    logger.info(
+        f"Medical Agent | SOS #{sos_id} | "
+        f"triage={triage_label} (level {triage_level}) | "
+        f"people={sos_event.get('people_count', 1)}"
+    )
 
-    # Do not dispatch for deceased (no medical help can be provided)
-    if triage == "deceased":
-        logger.info(f"SOS {sos_id} classified as DECEASED — no dispatch")
-        return
-
-    # ── Step 3: Open database and find nearest team ───────────────────────
     db = SessionLocal()
     try:
-        resource = find_nearest_medical_resource(sos_lat, sos_lon, triage, db)
+        # ── 2. Find best medical resource ─────────────────────────────────
+        resource, vehicle_type, distance_km = find_best_medical_resource(
+            sos_lat, sos_lng, triage_level, db
+        )
 
-        # ── Step 4a: No resource available ───────────────────────────────
+        # ── 3a. Nothing available ─────────────────────────────────────────
         if resource is None:
-            logger.warning(f"No medical resource available for SOS {sos_id}")
+            logger.warning(f"No medical resource available for SOS #{sos_id}")
             await conflict_queue.put({
-                "type": "no_medical_resource",
-                "sos_event": sos_event,
-                "triage_level": triage,
-                "agent": "medical",
-                "timestamp": datetime.now(timezone.utc).isoformat() + "Z",
+                "type":         "no_medical_resource",
+                "sos_event":    sos_event,
+                "triage_level": triage_level,
+                "triage_label": triage_label,
+                "agent":        "medical",
+                "timestamp":    datetime.now(timezone.utc).isoformat() + "Z",
             })
             return
 
-        # ── Step 4b: Check if resource is still available (conflict check) ─
+        # ── 3b. Race condition re-check ───────────────────────────────────
         db.refresh(resource)
         if resource.status != "available":
-            logger.warning(f"Medical resource {resource.name} just taken — conflict for SOS {sos_id}")
+            logger.warning(
+                f"Medical resource '{resource.name}' just taken — "
+                f"raising conflict for SOS #{sos_id}"
+            )
             await conflict_queue.put({
-                "type": "resource_conflict",
-                "sos_event": sos_event,
-                "triage_level": triage,
-                "resource_id": resource.id,
+                "type":          "resource_conflict",
+                "sos_event":     sos_event,
+                "triage_level":  triage_level,
+                "resource_id":   resource.id,
                 "resource_name": resource.name,
-                "agent": "medical",
-                "timestamp": datetime.now(timezone.utc).isoformat() + "Z",
+                "agent":         "medical",
+                "timestamp":     datetime.now(timezone.utc).isoformat() + "Z",
             })
             return
 
-        # ── Step 5: Dispatch ──────────────────────────────────────────────
-        mission = dispatch_medical_resource(sos_event, resource, triage, db)
+        # ── 4. Dispatch ───────────────────────────────────────────────────
+        mission, eta_minutes = dispatch_medical_resource(
+            sos_event, resource, vehicle_type, distance_km, db
+        )
 
-        # ── Step 6: Push to dispatch_queue for SMS ────────────────────────
-        dispatch_message = {
-            "type": "medical_dispatch_assigned",
-            "mission_id": mission.id,
-            "sos_id": sos_id,
-            "resource_id": resource.id,
+        # ── 5. Push to dispatch_queue (Agent 7 SMS) ───────────────────────
+        await dispatch_queue.put({
+            "type":          "medical_dispatch_assigned",
+            "mission_id":    mission.id,
+            "sos_id":        sos_id,
+            "resource_id":   resource.id,
             "resource_name": resource.name,
-            "resource_type": resource.resource_type,
-            "triage_level": triage,
-            "eta_minutes": mission.eta_minutes,
-            "destination_latitude": sos_lat,
-            "destination_longitude": sos_lon,
-            "timestamp": datetime.now(timezone.utc).isoformat() + "Z",
-        }
+            "vehicle_type":  vehicle_type,
+            "triage_level":  triage_level,
+            "triage_label":  triage_label,
+            "eta_minutes":   eta_minutes,
+            "dest_lat":      sos_lat,
+            "dest_lng":      sos_lng,
+            "timestamp":     datetime.now(timezone.utc).isoformat() + "Z",
+        })
 
-        await dispatch_queue.put(dispatch_message)
-        logger.info(f"Medical dispatch pushed to dispatch_queue for SOS {sos_id}")
+        # ── 6. Broadcast to React dashboard ───────────────────────────────
+        await broadcast(EVENT_DISPATCH_ASSIGNED, {
+            "mission_id":    mission.id,
+            "sos_id":        sos_id,
+            "resource_id":   resource.id,
+            "resource_name": resource.name,
+            "eta_minutes":   eta_minutes,
+        })
+
+        logger.info(f"Medical dispatch confirmed for SOS #{sos_id}")
 
     except Exception as e:
-        logger.error(f"Error in Medical Agent processing SOS {sos_id}: {e}")
+        logger.error(f"Medical Agent error on SOS #{sos_id}: {e}", exc_info=True)
         db.rollback()
     finally:
         db.close()
 
 
 # ============================================================================
-# LISTEN FOR CONFLICT RESOLUTIONS
+# PUBLIC API — called by rescue_agent fan-out loop
 # ============================================================================
-async def listen_for_resolutions():
+async def handle_sos_message(sos_event: dict):
     """
-    Background task: watches resolved_queue for Agent 6 decisions.
-    If medical agent wins the conflict, re-process the original SOS.
+    Public entry point called by rescue_agent.run() for every SOS message.
+    Filters and dispatches if medical response is warranted.
     """
-    logger.info("Medical Agent: listening for conflict resolutions...")
-    while True:
-        try:
-            resolution = await resolved_queue.get()
+    await process_medical_sos(sos_event)
 
-            if resolution.get("winner_agent") == "medical":
-                logger.info(f"Conflict resolved — medical won: {resolution}")
-                original_sos = resolution.get("sos_event")
-                if original_sos:
-                    await process_medical_sos(original_sos)
-            else:
-                logger.info(
-                    f"Conflict resolved — medical lost SOS {resolution.get('sos_id')}. "
-                    f"Fallback assigned by Agent 6."
-                )
-        except Exception as e:
-            logger.error(f"Error reading resolved_queue in Medical Agent: {e}")
-            await asyncio.sleep(1)
+
+async def handle_resolution_message(resolution: dict):
+    """
+    Called by rescue_agent's resolution fan-out when Agent 6 resolves a conflict.
+    If medical won, re-attempt dispatch with the now-granted resource.
+    """
+    if resolution.get("winner_agent") == "medical":
+        logger.info("Medical won conflict — re-dispatching")
+        await process_medical_sos(resolution.get("sos_event", {}))
+    else:
+        logger.info(
+            f"Medical lost conflict for SOS #{resolution.get('sos_id')} "
+            f"— fallback assigned by Agent 6"
+        )
 
 
 # ============================================================================
-# MAIN RUN LOOP
+# run() — required by main.py but queue ownership is in rescue_agent
 # ============================================================================
 async def run():
     """
-    Main loop for the Medical Agent.
-    Reads SOS events from sos_queue, runs triage, dispatches medical teams.
+    Called by main.py as an asyncio background task.
 
-    Two tasks run concurrently:
-      1. Main loop: reads sos_queue, handles medical SOSes
-      2. Background: watches resolved_queue for conflict outcomes
+    This agent does NOT own sos_queue or resolved_queue — rescue_agent.run()
+    handles the fan-out.  This coroutine simply stays alive so main.py's task
+    list remains consistent (all 7 agents have a run() coroutine).
     """
-    logger.info("Medical Agent started — waiting for SOS events on sos_queue")
-
-    # Start conflict resolution listener in background
-    asyncio.create_task(listen_for_resolutions())
-
+    logger.info(
+        "Medical Agent started — queue fan-out handled by Rescue Agent. "
+        "Waiting for forwarded events."
+    )
+    # Keep the task alive so main.py doesn't see it as crashed.
     while True:
-        try:
-            # Wait for next SOS event
-            sos_event = await sos_queue.get()
-
-            # Handle medical and general SOS types
-            event_type = sos_event.get("type", "").lower()
-            if event_type in ["medical", "medical_only", "general"]:
-                await process_medical_sos(sos_event)
-            elif event_type in ["rescue", "evacuation"] and sos_event.get("injury_description"):
-                # Rescue SOS but has injuries — medical agent handles the medical side
-                await process_medical_sos(sos_event)
-            else:
-                logger.debug(f"Medical Agent skipping SOS type '{event_type}'")
-
-        except Exception as e:
-            logger.error(f"Unexpected error in Medical Agent main loop: {e}")
-            await asyncio.sleep(5)
+        await asyncio.sleep(3600)
