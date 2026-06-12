@@ -76,6 +76,10 @@ copy .env.example .env
 python -m backend.seed
 # → "Seeded Lakhimpur district data successfully"
 
+# Seed volunteers and donations data
+python seed_volunteers.py
+# → "Seeded mock volunteers and donations."
+
 # 4. Start the server
 python -m uvicorn backend.main:app --reload --port 8000
 
@@ -107,11 +111,11 @@ python -m uvicorn backend.main:app --reload --port 8000
 
 You don't need to build any of this — it's done and working:
 
-- ✅ **Database** — 6 tables: `resources`, `shelters`, `sos_events`, `missions`, `flood_alerts`, `audit_log`
-- ✅ **Seed Data** — 5 resources (H1 helicopter, B1/B2 boats, T1 truck, MT1 medical team) + 2 shelters in Lakhimpur
+- ✅ **Database** — 8 tables: `resources`, `shelters`, `sos_events`, `missions`, `flood_alerts`, `audit_log`, `registered_citizens`, `donations`
+- ✅ **Seed Data** — 5 resources (H1 helicopter, B1/B2 boats, T1 truck, MT1 medical team) + 2 shelters in Lakhimpur + mock volunteers/donations
 - ✅ **6 Async Queues** — `alert_queue`, `sos_queue`, `dispatch_queue`, `resource_update_queue`, `conflict_queue`, `resolved_queue`
 - ✅ **WebSocket Broadcast** — 8 event types ready for the frontend
-- ✅ **REST API** — 7 endpoints for dashboard data + Twilio webhook
+- ✅ **REST API** — 9 endpoints for dashboard data + Twilio webhook
 - ✅ **Utility Functions** — `haversine()`, `rational_model()`, `priority_score()`
 - ✅ **Offline Mode** — `OFFLINE_MODE=true` reads mock data, skips Twilio
 
@@ -219,6 +223,9 @@ This is our safety net if the demo venue WiFi goes down.
 | `GET` | `/api/alerts` | Flood alerts, newest first |
 | `GET` | `/api/sos` | All SOS events |
 | `GET` | `/api/audit-log` | All agent decisions, newest first |
+| `GET` | `/api/volunteers` | All registered volunteers/citizens |
+| `GET` | `/api/donations` | All pending and confirmed donations |
+| `POST` | `/api/donations` | Submit a new donation offer |
 | `POST` | `/api/twilio/inbound` | Twilio SMS webhook (form data: `From`, `Body`) |
 | `WS` | `/ws` | WebSocket for live dashboard updates |
 
