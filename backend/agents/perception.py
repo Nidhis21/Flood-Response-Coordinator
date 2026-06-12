@@ -122,6 +122,7 @@ def load_mock_rainfall() -> dict:
     with open(mock_path, "r") as f:
         return json.load(f)
 
+
 async def run():
     """
     Main loop for the Perception Agent.
