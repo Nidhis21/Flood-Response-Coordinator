@@ -1,0 +1,191 @@
+@import "tailwindcss";
+
+@theme {
+  --color-emergency-blue: #0ea5e9;
+  --color-emergency-cyan: #06b6d4;
+  --color-safe-green: #10b981;
+  --color-watch-yellow: #eab308;
+  --color-moderate-orange: #f97316;
+  --color-risk-red: #ef4444;
+  
+  --font-sans: 'Inter', sans-serif;
+  --font-display: 'Outfit', sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+}
+
+/* Custom EOC Styling */
+body {
+  background-color: #020617; /* slate-950 */
+  color: #f8fafc; /* slate-50 */
+}
+
+/* Custom Scrollbar for modern dashboards */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #020617; /* slate-950 */
+}
+
+::-webkit-scrollbar-thumb {
+  background: #1e293b; /* slate-800 */
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #06b6d4; /* cyan-500 */
+}
+
+/* Radar pulse animation for active SOS calls */
+@keyframes radar-pulse {
+  0% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
+  }
+  70% {
+    transform: scale(1);
+    box-shadow: 0 0 0 10px rgba(239, 68, 68, 0);
+  }
+  100% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+  }
+}
+
+.animate-radar-red {
+  animation: radar-pulse 1.8s infinite;
+}
+
+@keyframes radar-pulse-cyan {
+  0% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(6, 182, 212, 0.7);
+  }
+  70% {
+    transform: scale(1);
+    box-shadow: 0 0 0 8px rgba(6, 182, 212, 0);
+  }
+  100% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(6, 182, 212, 0);
+  }
+}
+
+.animate-radar-cyan {
+  animation: radar-pulse-cyan 2s infinite;
+}
+
+@keyframes float {
+  0% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-4px);
+  }
+  100% {
+    transform: translateY(0px);
+  }
+}
+
+.animate-float {
+  animation: float 3s ease-in-out infinite;
+}
+
+/* Glassmorphism EOC card styling */
+.eoc-card {
+  background: rgba(15, 23, 42, 0.6); /* slate-900 / 60% */
+  border: 1px solid rgba(30, 41, 59, 0.8); /* slate-800 */
+  backdrop-filter: blur(8px);
+}
+
+.eoc-card-glow-cyan {
+  box-shadow: 0 0 15px rgba(6, 182, 212, 0.15);
+  border: 1px solid rgba(6, 182, 212, 0.4);
+}
+
+.eoc-card-glow-red {
+  box-shadow: 0 0 15px rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+}
+
+/* Custom Leaflet Map styling for high-tech dark theme */
+.leaflet-container {
+  background: #020617 !important;
+  font-family: inherit;
+}
+
+.leaflet-bar {
+  border: 1px solid #1e293b !important;
+  box-shadow: none !important;
+}
+
+.leaflet-bar a {
+  background-color: #0f172a !important;
+  color: #94a3b8 !important;
+  border-bottom: 1px solid #1e293b !important;
+}
+
+.leaflet-bar a:hover {
+  background-color: #1e293b !important;
+  color: #06b6d4 !important;
+}
+
+.leaflet-popup-content-wrapper {
+  background: #0f172a !important;
+  color: #f8fafc !important;
+  border: 1px solid #334155 !important;
+  border-radius: 6px !important;
+}
+
+.leaflet-popup-tip {
+  background: #334155 !important;
+}
+
+/* Custom Marker styles */
+.custom-div-icon {
+  background: none;
+  border: none;
+}
+
+.pulse-marker-inner {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid white;
+}
+
+/* Custom Mapbox Popup styling to match EOC dark theme */
+.mapboxgl-popup-content {
+  background: #0f172a !important;
+  color: #f8fafc !important;
+  border: 1px solid #334155 !important;
+  border-radius: 6px !important;
+  padding: 0 !important;
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5) !important;
+}
+
+.mapboxgl-popup-anchor-top .mapboxgl-popup-tip {
+  border-bottom-color: #334155 !important;
+}
+.mapboxgl-popup-anchor-bottom .mapboxgl-popup-tip {
+  border-top-color: #334155 !important;
+}
+.mapboxgl-popup-anchor-left .mapboxgl-popup-tip {
+  border-right-color: #334155 !important;
+}
+.mapboxgl-popup-anchor-right .mapboxgl-popup-tip {
+  border-left-color: #334155 !important;
+}
+
+.mapboxgl-popup-close-button {
+  color: #94a3b8 !important;
+  padding: 4px 8px !important;
+  font-size: 14px !important;
+}
+
+.mapboxgl-popup-close-button:hover {
+  background-color: transparent !important;
+  color: #ef4444 !important;
+}
