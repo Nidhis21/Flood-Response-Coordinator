@@ -1,261 +1,178 @@
 # 🌊 Flood Response Coordinator
 
-**7-agent autonomous flood response system for Lakhimpur, Assam**
+**A 7-Agent Autonomous Flood Response System**
 
-Built for a 2-day hackathon. This system coordinates rescue, medical, logistics, and survivor communication during floods using AI agents that talk to each other, resolve conflicts, and push live updates to a dashboard.
+An advanced, multi-agent AI system designed to autonomously coordinate emergency response efforts during severe floods. Built with a focus on real-world applicability (specifically modeled after the Lakhimpur district in Assam), this system orchestrates rescue missions, medical dispatches, proactive logistics, and citizen communication using a network of intelligent agents that collaborate, debate, and resolve conflicts in real-time.
 
 ---
 
-## What We're Building
+## ✨ Key Features
 
-A multi-agent system where **7 AI agents** work together autonomously during a flood:
+- **🧠 Multi-Agent Autonomous Coordination**: 7 specialized AI agents (Perception, Prediction, Rescue, Medical, Logistics, Liaison, and Conflict Resolution) that operate concurrently.
+- **⚖️ Real-Time Conflict Resolution**: When multiple agents attempt to dispatch the same limited resource (e.g., a single helicopter for two different emergencies), a Priority Auction is held using a weighted formula (lives at risk, urgency, irreversibility, distance).
+- **📱 Two-Way SMS Citizen Liaison**: Citizens can text the system via Twilio. The Liaison Agent uses NLP to classify the intent (SOS, Donation Offer, Shelter Request), handles multi-turn conversations, and automatically routes actionable intelligence to the correct queue.
+- **🚚 Proactive Logistics & Donations**: The Logistics Agent preemptively moves trucks and boats based on flood predictions, and automatically assigns vehicles to pick up community donations.
+- **🗺️ Live Mapbox Dashboard**: A React-based EOC (Emergency Operations Center) dashboard providing real-time visualization of flood severity, resource GPS tracking, SOS events, and live agent decision-making logs via WebSockets.
+- **🔌 Offline / Fallback Mode**: Capable of running in a fully simulated offline mode with mock sensor data, ensuring the system remains operational if external network APIs drop.
 
+---
+
+## 🏗️ System Architecture & Agent Flow
+
+The system does not operate in a simple linear pipeline. It is a highly dynamic, event-driven architecture where agents react to both environmental data and human input simultaneously.
+
+```mermaid
+graph TD
+    %% External World
+    Sensors((Weather & Water Sensors)) -->|Raw Data| Perception[👁️ Perception Agent]
+    Citizen((Citizen SMS)) <-->|Twilio Webhook| Liaison[💬 Community Liaison Agent]
+    
+    %% Prediction & Routing
+    Perception -->|Alert Queue| Prediction[📈 Prediction Agent]
+    Prediction -.->|Broadcasts Severity| Logistics[🚚 Logistics Agent]
+    Prediction -.->|Broadcasts Severity| Dashboard
+    
+    %% Liaison Routing
+    Liaison -->|Classifies as SOS| SOSQueue[(SOS Queue)]
+    Liaison -->|Classifies Donation| Logistics
+    
+    %% Action Agents
+    SOSQueue -->|Pulls SOS| Rescue[🚁 Rescue Agent]
+    SOSQueue -->|Pulls SOS| Medical[⚕️ Medical Agent]
+    
+    %% Conflict & Assignment
+    Rescue -->|Requests Resource| ConflictQueue[(Conflict Queue)]
+    Medical -->|Requests Resource| ConflictQueue
+    Logistics -->|Pre-positions Resource| ConflictQueue
+    
+    ConflictQueue -->|Evaluates Priority| Conflict[⚖️ Conflict Resolution Agent]
+    Conflict -->|Approves/Rejects| DB[(SQLite Database)]
+    Conflict -->|Triggers Notification| Liaison
+    
+    %% Real-time UI
+    DB -->|State Hydration| Dashboard[💻 Real-Time EOC Dashboard]
+    Conflict -.->|WebSocket Logs| Dashboard
+    Rescue -.->|WebSocket Updates| Dashboard
+    Medical -.->|WebSocket Updates| Dashboard
+    Logistics -.->|WebSocket Updates| Dashboard
 ```
-                    ┌─────────────┐
-                    │  Perception │──── reads rainfall / water levels
-                    └──────┬──────┘
-                           │ alert_queue
-                    ┌──────▼──────┐
-                    │  Prediction │──── forecasts flood severity
-                    └──────┬──────┘
-                           │ broadcast: flood_alert
-          ┌────────────────┼────────────────┐
-          │                │                │
-   ┌──────▼──────┐  ┌─────▼──────┐  ┌──────▼──────┐
-   │   Rescue    │  │  Medical   │  │  Logistics  │
-   │   Agent     │  │  Agent     │  │  Agent      │
-   └──────┬──────┘  └─────┬──────┘  └──────┬──────┘
-          │               │                │
-          └───────┬───────┘                │
-                  │ conflict_queue         │
-          ┌───────▼────────┐               │
-          │   Conflict     │◄──────────────┘
-          │   Resolution   │──── runs priority auction
-          └───────┬────────┘
-                  │ resolved_queue + broadcast
-          ┌───────▼────────┐
-          │   Community    │──── sends SMS to survivors
-          │   Liaison      │
-          └────────────────┘
-```
 
-**The differentiator:** When two agents fight over the same helicopter, our Conflict Resolution Agent runs a priority auction using a weighted formula (lives at risk, urgency, irreversibility, distance) and picks the winner — with a fallback plan for the loser. Every decision is logged and explainable.
+### The 7 Agents
+1. **👁️ Perception Agent**: Ingests raw environmental data (rainfall, river discharge) from external APIs or mock sensors.
+2. **📈 Prediction Agent**: Calculates flood severity and expected time-to-inundation for specific geographic circles.
+3. **🚁 Rescue Agent**: Monitors the SOS queue for flood entrapments and attempts to dispatch helicopters and boats.
+4. **⚕️ Medical Agent**: Monitors the SOS queue for medical emergencies and dispatches specialized medical teams.
+5. **🚚 Logistics Agent**: Manages supply chains, pre-positions resources based on predictive alerts, and handles incoming donation pickups.
+6. **⚖️ Conflict Resolution Agent**: The core arbiter. When the Rescue and Medical agents request the same resource, this agent evaluates the "lives at risk", distance, and severity, awarding the resource to the highest priority while generating a fallback plan for the loser.
+7. **💬 Community Liaison Agent**: The human interface. Parses incoming SMS texts via Twilio, extracts GPS coordinates and intent, adds data to the backend queues, and sends confirmation texts back to citizens.
 
 ---
 
-## Tech Stack
+## 💻 Tech Stack
 
-| Layer | Technology | Why |
-|-------|-----------|-----|
-| Backend | **FastAPI** + Uvicorn | Async-native, auto-generates API docs |
-| Database | **SQLite** via SQLAlchemy | Single file, works offline, zero setup |
-| Agent Framework | **LangGraph** + Gemini 1.5 Pro | ReAct agents with tool use |
-| Agent Communication | **asyncio queues** | No Redis needed, no external deps |
-| Live Updates | **FastAPI WebSocket** | Real-time dashboard push |
-| SMS | **Twilio** | Survivor communication |
-| Distance Calc | **Haversine** function | No PostGIS needed |
-| Frontend | **React** + Mapbox GL | Map-based dashboard (separate) |
-
-**No Docker. No containers. Everything runs directly.**
+| Component | Technology | Description |
+|-----------|-----------|-------------|
+| **Backend** | `FastAPI` + `Uvicorn` | High-performance async Python framework. |
+| **Agent Logic** | `LangGraph` + `Gemini` | ReAct agents utilizing tool-use and LLM reasoning. |
+| **Database** | `SQLite` + `SQLAlchemy` | Lightweight, single-file relational database. |
+| **Messaging** | `asyncio.Queue` | Internal memory queues for ultra-fast inter-agent comms. |
+| **Real-time** | `WebSockets` | Pushes live state changes from the backend to the UI. |
+| **Frontend** | `React` + `TypeScript` | Component-based UI with Redux state management. |
+| **Mapping** | `Mapbox GL` | Renders the live operational map of Lakhimpur. |
+| **Comms** | `Twilio` | Handles real-world 2-way SMS communication. |
 
 ---
 
-## Quick Start
+## 🚀 Getting Started
 
-```powershell
-# 1. Clone and install
-git clone <repo-url>
+### 1. Prerequisites
+- Python 3.10+
+- Node.js 18+
+- Twilio Account (for live SMS, optional)
+- Gemini API Key
+
+### 2. Installation
+Clone the repository and install the backend dependencies:
+```bash
+git clone https://github.com/Nidhis21/Flood-Response-Coordinator.git
 cd Flood-Response-Coordinator
+
+# Install Python dependencies
 pip install -r requirements.txt
 
-# 2. Set up environment
-copy .env.example .env
-# Edit .env with your API keys (or leave OFFLINE_MODE=true for now)
+# Set up environment variables
+cp .env.example .env
+```
+*Edit the `.env` file to include your `GEMINI_API_KEY`. Leave `OFFLINE_MODE=true` if you do not want to configure Twilio yet.*
 
-# 3. Seed the database
+### 3. Database Seeding
+Initialize the SQLite database with the geographical data, shelters, and resources for the Lakhimpur district:
+```bash
+# Seed base resources and shelters
 python -m backend.seed
-# → "Seeded Lakhimpur district data successfully"
 
-# Seed volunteers and donations data
+# Seed mock citizens, volunteers, and historical donations
 python seed_volunteers.py
-# → "Seeded mock volunteers and donations."
-
-# 4. Start the server
-python -m uvicorn backend.main:app --reload --port 8000
-
-# 5. Verify
-# Open http://localhost:8000/docs        → Swagger UI with all endpoints
-# Open http://localhost:8000/api/resources → 5 seeded resources as JSON
-# Open http://localhost:8000/api/shelters  → 2 seeded shelters as JSON
 ```
 
-**Postman:** Import `postman_collection.json` — all endpoints are pre-configured and ready to test.
-
----
-
-## Team Assignments
-
-| Member | Agent(s) | File(s) | Start Here |
-|--------|----------|---------|------------|
-| **Member 1** | Perception + Prediction | `backend/agents/perception.py`, `backend/agents/prediction.py` | Read `mock_rainfall.json` for input data format, implement rational model call |
-| **Member 2** | Logistics | `backend/agents/logistics.py` | Query `resources` and `shelters` tables, implement pre-positioning logic |
-| **Member 3** | Rescue + Medical | `backend/agents/rescue.py`, `backend/agents/medical.py` | Read from `sos_queue`, find nearest resource with `haversine()` |
-| **Nidhi** | Conflict Resolution + Foundation | `backend/agents/conflict.py` | LangGraph + Gemini agent with priority auction |
-| **Member 5** | Community Liaison + Frontend | `backend/agents/liaison.py`, `frontend/` | Read from `dispatch_queue`, send SMS via Twilio |
-
-**Every stub file already has:** owner label, queue subscriptions, broadcast events, and a numbered TODO checklist. Open your file and start at TODO #1.
-
----
-
-## What's Already Built (Foundation)
-
-You don't need to build any of this — it's done and working:
-
-- ✅ **Database** — 8 tables: `resources`, `shelters`, `sos_events`, `missions`, `flood_alerts`, `audit_log`, `registered_citizens`, `donations`
-- ✅ **Seed Data** — 5 resources (H1 helicopter, B1/B2 boats, T1 truck, MT1 medical team) + 2 shelters in Lakhimpur + mock volunteers/donations
-- ✅ **6 Async Queues** — `alert_queue`, `sos_queue`, `dispatch_queue`, `resource_update_queue`, `conflict_queue`, `resolved_queue`
-- ✅ **WebSocket Broadcast** — 8 event types ready for the frontend
-- ✅ **REST API** — 9 endpoints for dashboard data + Twilio webhook
-- ✅ **Utility Functions** — `haversine()`, `rational_model()`, `priority_score()`
-- ✅ **Offline Mode** — `OFFLINE_MODE=true` reads mock data, skips Twilio
-
----
-
-## Project Structure
-
-```
-Flood-Response-Coordinator/
-├── .env.example              ← copy to .env, fill in keys
-├── requirements.txt          ← pip install -r requirements.txt
-├── MESSAGE_FORMATS.md        ← JSON schema for every queue message
-├── postman_collection.json   ← import into Postman for instant API testing
-│
-├── backend/
-│   ├── database.py           ← SQLite engine + session setup
-│   ├── models.py             ← 6 ORM tables
-│   ├── queues.py             ← 6 asyncio queues (read the comments!)
-│   ├── broadcast.py          ← WebSocket broadcast + event constants
-│   ├── utils.py              ← haversine, rational_model, priority_score
-│   ├── seed.py               ← pre-populates Lakhimpur data
-│   ├── main.py               ← FastAPI app, all endpoints, agent startup
-│   ├── mock_rainfall.json    ← real 2012 Lakhimpur flood numbers
-│   │
-│   └── agents/
-│       ├── conflict.py       ← Conflict Resolution (Nidhi)
-│       ├── perception.py     ← Perception (Member 1)
-│       ├── prediction.py     ← Prediction (Member 1)
-│       ├── logistics.py      ← Logistics (Member 2)
-│       ├── rescue.py         ← Rescue (Member 3)
-│       ├── medical.py        ← Medical (Member 3)
-│       └── liaison.py        ← Community Liaison (Member 5)
-│
-└── frontend/                 ← React + Mapbox (Member 5)
+### 4. Running the System
+Start the FastAPI backend server (which automatically spins up all 7 autonomous agents in the background):
+```bash
+python -m uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
----
-
-## Key Files to Read First
-
-1. **Your agent stub file** — has your TODO list
-2. **[MESSAGE_FORMATS.md](MESSAGE_FORMATS.md)** — exact JSON format for every queue message
-3. **[backend/queues.py](backend/queues.py)** — which queues you read from / write to
-4. **[backend/broadcast.py](backend/broadcast.py)** — which WebSocket events you fire
-5. **[backend/utils.py](backend/utils.py)** — haversine, rational model, priority score functions
-
----
-
-## How Agents Communicate
-
-Agents talk through **asyncio queues** (not HTTP, not Redis). Each agent runs as an async background task.
-
-```python
-# Example: Reading from a queue in your agent
-from backend.queues import sos_queue
-
-async def run():
-    while True:
-        message = await sos_queue.get()  # blocks until message arrives
-        # process message...
+Start the React Frontend:
+```bash
+cd frontend
+npm install
+npm run dev
 ```
 
-```python
-# Example: Broadcasting to the dashboard
-from backend.broadcast import broadcast, EVENT_DISPATCH_ASSIGNED
-
-await broadcast(EVENT_DISPATCH_ASSIGNED, {
-    "mission_id": 1,
-    "sos_id": 3,
-    "resource_name": "B1",
-})
-```
-
-```python
-# Example: Writing to the database
-from backend.database import SessionLocal
-from backend.models import Resource
-
-db = SessionLocal()
-resource = db.query(Resource).filter(Resource.name == "B1").first()
-resource.status = "dispatched"
-db.commit()
-db.close()
-```
+### 5. Verification
+- **EOC Dashboard**: Open `http://localhost:5173` in your browser.
+- **API Docs**: Open `http://localhost:8000/docs` to view the interactive Swagger UI for the REST API.
 
 ---
 
-## Offline Mode
+## 📡 API Reference
 
-Set `OFFLINE_MODE=true` in `.env` (this is the default). When active:
-- **Perception Agent** reads from `mock_rainfall.json` instead of calling Open-Meteo API
-- **Community Liaison** prints SMS to console instead of sending via Twilio
-- Everything else works identically
-
-This is our safety net if the demo venue WiFi goes down.
-
----
-
-## API Reference
+The backend exposes a REST API for initial state hydration and WebSockets for real-time updates.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/api/resources` | All resources with GPS + inventory |
-| `GET` | `/api/shelters` | All shelters with capacity + stocks |
-| `GET` | `/api/alerts` | Flood alerts, newest first |
-| `GET` | `/api/sos` | All SOS events |
-| `GET` | `/api/audit-log` | All agent decisions, newest first |
-| `GET` | `/api/volunteers` | All registered volunteers/citizens |
-| `GET` | `/api/donations` | All pending and confirmed donations |
-| `POST` | `/api/donations` | Submit a new donation offer |
-| `POST` | `/api/twilio/inbound` | Twilio SMS webhook (form data: `From`, `Body`) |
-| `WS` | `/ws` | WebSocket for live dashboard updates |
-
-Full interactive docs at **http://localhost:8000/docs** when server is running.
+| `GET` | `/api/resources` | Returns all emergency resources, inventory, and live GPS coords. |
+| `GET` | `/api/shelters` | Returns shelter capacities and supply stocks. |
+| `GET` | `/api/alerts` | Returns active flood predictions and severity levels. |
+| `GET` | `/api/sos` | Returns all active and resolved SOS events. |
+| `GET` | `/api/audit-log` | Returns the transparent decision logs from the Conflict Agent. |
+| `GET` | `/api/volunteers` | Returns all registered community volunteers. |
+| `GET` | `/api/donations` | Returns pending and fulfilled donation offers. |
+| `POST` | `/api/donations` | Submit a new manual donation into the system. |
+| `POST` | `/api/twilio/inbound`| Webhook URL for Twilio to send incoming SMS messages. |
+| `WS`  | `/ws` | WebSocket connection for the React dashboard. |
 
 ---
 
-## Seed Data (Lakhimpur District)
+## 🛡️ Offline & Development Mode
 
-**Resources:**
-| Name | Type | Position |
-|------|------|----------|
-| H1 | Helicopter | 27.235, 94.105 |
-| B1 | Boat | 27.228, 94.098 |
-| B2 | Boat | 27.240, 94.112 |
-| T1 | Supply Truck | 27.220, 94.090 |
-| MT1 | Medical Team | 27.230, 94.100 |
+If you are running the system in a constrained environment (e.g., a hackathon venue with strict firewalls or unstable WiFi), ensure `OFFLINE_MODE=true` is set in your `.env`.
 
-**Shelters:**
-| Name | Capacity | Stocks |
-|------|----------|--------|
-| Gogamukh Community Hall | 340 | Food: 500, Water: 3000L, Medicine: 100 |
-| Sisiborgaon School | 180 | Food: 250, Water: 1500L, Medicine: 50 |
+When active:
+- **Perception** reads from local `mock_rainfall.json` instead of hitting the live Open-Meteo API.
+- **Liaison** prints SMS responses to the console instead of attempting Twilio network requests.
+- You can simulate incoming SMS texts directly through the **Liaison Console** in the frontend dashboard.
 
 ---
 
-## Ground Rules
+## 🤝 Contributing
 
-- **Never commit `.env`** — it's in `.gitignore`
-- **Don't modify foundation files** (`database.py`, `models.py`, `queues.py`, `main.py`) without checking with Nidhi first
-- **Always use the queue message formats** documented in `MESSAGE_FORMATS.md`
-- **Always broadcast** relevant events so the dashboard stays live
-- **Log decisions** to `audit_log` table for the demo narrative
+We welcome contributions to improve the agent prompts, add new resource types, or enhance the dashboard! 
+1. Fork the Project
+2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
+4. Push to the Branch (`git push origin feature/AmazingFeature`)
+5. Open a Pull Request
+
+## 📄 License
+
+Distributed under the MIT License. See `LICENSE` for more information.
