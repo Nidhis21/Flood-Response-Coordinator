@@ -231,7 +231,8 @@ export function LiveMap() {
 
         const popupContent = `
           <div class="p-2 text-slate-100 font-sans min-w-[180px]">
-            <h4 class="font-bold text-sm text-cyan-400 mb-2">${shelter.name}</h4>
+            <h4 class="font-bold text-sm text-cyan-400 mb-0.5">${shelter.name}</h4>
+            ${shelter.address ? `<div class="text-[10px] text-slate-400 mb-2">${shelter.address}</div>` : ''}
             <div class="space-y-1.5 text-xs">
               <div class="flex justify-between items-center bg-slate-950/40 p-1 px-1.5 rounded">
                 <span class="text-slate-400">Occupancy:</span>
@@ -475,7 +476,8 @@ export function LiveMap() {
         L.marker([shelter.lat, shelter.lng], { icon: customIcon })
           .bindPopup(`
             <div class="p-2 text-slate-100 font-sans min-w-[180px]">
-              <h4 class="font-bold text-sm text-cyan-400 mb-2">${shelter.name}</h4>
+              <h4 class="font-bold text-sm text-cyan-400 mb-0.5">${shelter.name}</h4>
+              ${shelter.address ? `<div class="text-[10px] text-slate-400 mb-2">${shelter.address}</div>` : ''}
               <div class="space-y-1.5 text-xs">
                 <div class="flex justify-between items-center bg-slate-950/40 p-1 px-1.5 rounded">
                   <span class="text-slate-400">Occupancy:</span>

@@ -16,6 +16,7 @@ export interface Shelter {
   name: string;
   lat: number;
   lng: number;
+  address?: string;
   capacity: number;
   current_occupancy: number;
   food_stock: number;
@@ -48,6 +49,33 @@ export interface FloodAlert {
   estimated_flood_time?: string | null;
   affected_circles: string[];
   fhi_score: number;
+  disaster_phase: string;
+  created_at: string;
+}
+
+export interface RegisteredCitizen {
+  id: number;
+  name: string;
+  phone: string;
+  role: string;
+  district: string;
+  status: string;
+  resource_type?: string;
+  resource_description?: string;
+  created_at: string;
+}
+
+export interface Donation {
+  id: number;
+  donor_phone: string;
+  donor_name: string;
+  donation_type: string;
+  quantity: number;
+  description: string;
+  status: string;
+  assigned_truck_id?: number;
+  pickup_lat?: number;
+  pickup_lng?: number;
   created_at: string;
 }
 
@@ -111,6 +139,8 @@ interface DisasterState {
   sosQueue: SOSEvent[];
   auditLogs: DecisionLog[];
   smsLogs: SmsMessage[];
+  volunteers: RegisteredCitizen[];
+  donations: Donation[];
   activeConflicts: Record<number, ConflictState>;
   socketConnected: boolean;
   loading: boolean;
@@ -124,6 +154,8 @@ const initialState: DisasterState = {
   sosQueue: [],
   auditLogs: [],
   smsLogs: [],
+  volunteers: [],
+  donations: [],
   activeConflicts: {},
   socketConnected: false,
   loading: false,
@@ -163,6 +195,15 @@ const disasterSlice = createSlice({
     setAuditLogs(state, action: PayloadAction<DecisionLog[]>) {
       state.auditLogs = action.payload;
     },
+    setSmsLogs(state, action: PayloadAction<SmsMessage[]>) {
+      state.smsLogs = action.payload;
+    },
+    setVolunteers(state, action: PayloadAction<RegisteredCitizen[]>) {
+      state.volunteers = action.payload;
+    },
+    setDonations(state, action: PayloadAction<Donation[]>) {
+      state.donations = action.payload;
+    },
 
     // WebSocket / Real-time Updates
     updateFloodAlert(state, action: PayloadAction<Partial<FloodAlert> & { district: string }>) {
@@ -193,13 +234,17 @@ const disasterSlice = createSlice({
       new_lat: number;
       new_lng: number;
       new_status?: 'available' | 'dispatched' | 'maintenance';
+      inventory?: Record<string, number>;
     }>) {
-      const { resource_id, new_lat, new_lng, new_status } = action.payload;
+      const { resource_id, new_lat, new_lng, new_status, inventory } = action.payload;
       if (state.resources[resource_id]) {
         state.resources[resource_id].lat = new_lat;
         state.resources[resource_id].lng = new_lng;
         if (new_status) {
           state.resources[resource_id].status = new_status;
+        }
+        if (inventory !== undefined) {
+          state.resources[resource_id].inventory = inventory;
         }
       }
     },
@@ -325,22 +370,8 @@ const disasterSlice = createSlice({
       }
     },
 
-    addSmsSent(state, action: PayloadAction<{
-      phone: string;
-      message: string;
-      sos_id?: number;
-    }>) {
-      const { phone, message, sos_id } = action.payload;
-      const newMsg: SmsMessage = {
-        id: `out-${Date.now()}`,
-        phone,
-        body: message,
-        direction: 'outbound',
-        timestamp: new Date().toISOString(),
-        status: 'sent',
-        sos_id,
-      };
-      state.smsLogs.unshift(newMsg);
+    addSmsSent(state, action: PayloadAction<SmsMessage>) {
+      state.smsLogs.unshift(action.payload);
     },
 
     addSmsInboundSimulated(state, action: PayloadAction<SmsMessage>) {
@@ -358,6 +389,7 @@ export const {
   setAlerts,
   setSosQueue,
   setAuditLogs,
+  setSmsLogs,
   updateFloodAlert,
   updateResourcePosition,
   addSosEvent,
@@ -367,6 +399,8 @@ export const {
   updateShelter,
   addSmsSent,
   addSmsInboundSimulated,
+  setVolunteers,
+  setDonations,
 } = disasterSlice.actions;
 
 export default disasterSlice.reducer;

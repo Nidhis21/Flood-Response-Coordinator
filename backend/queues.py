@@ -15,51 +15,34 @@ Architecture:
 
 import asyncio
 
-# ---------------------------------------------------------------------------
-# alert_queue
-# Producer: Perception Agent (pushes raw rainfall/water-level readings)
-# Consumer: Prediction Agent (reads and computes flood forecasts)
-# Message: see MESSAGE_FORMATS.md § alert_queue
-# ---------------------------------------------------------------------------
-alert_queue: asyncio.Queue = asyncio.Queue()
+class LazyQueue:
+    def __init__(self):
+        self._q = None
 
-# ---------------------------------------------------------------------------
-# sos_queue
-# Producer: Community Liaison Agent (pushes parsed SOS from SMS/webhook)
-# Consumer: Rescue Agent, Medical Agent (read and decide dispatch)
-# Message: see MESSAGE_FORMATS.md § sos_queue
-# ---------------------------------------------------------------------------
-sos_queue: asyncio.Queue = asyncio.Queue()
+    @property
+    def q(self):
+        if self._q is None:
+            self._q = asyncio.Queue()
+        return self._q
 
-# ---------------------------------------------------------------------------
-# dispatch_queue
-# Producer: Rescue Agent, Medical Agent (push dispatch assignments)
-# Consumer: Community Liaison Agent (sends SMS confirmation to survivor)
-# Message: see MESSAGE_FORMATS.md § dispatch_queue
-# ---------------------------------------------------------------------------
-dispatch_queue: asyncio.Queue = asyncio.Queue()
+    async def put(self, item):
+        await self.q.put(item)
 
-# ---------------------------------------------------------------------------
-# resource_update_queue
-# Producer: Logistics Agent (pushes resource position/status changes)
-# Consumer: Dashboard broadcast, DB update
-# Message: see MESSAGE_FORMATS.md § resource_update_queue
-# ---------------------------------------------------------------------------
-resource_update_queue: asyncio.Queue = asyncio.Queue()
+    async def get(self):
+        return await self.q.get()
 
-# ---------------------------------------------------------------------------
-# conflict_queue
-# Producer: Rescue Agent, Medical Agent, Logistics Agent
-#           (push when two+ agents want the same resource simultaneously)
-# Consumer: Conflict Resolution Agent (runs priority auction)
-# Message: see MESSAGE_FORMATS.md § conflict_queue
-# ---------------------------------------------------------------------------
-conflict_queue: asyncio.Queue = asyncio.Queue()
+    def put_nowait(self, item):
+        self.q.put_nowait(item)
+        
+    def get_nowait(self):
+        return self.q.get_nowait()
+        
+    def task_done(self):
+        self.q.task_done()
 
-# ---------------------------------------------------------------------------
-# resolved_queue
-# Producer: Conflict Resolution Agent (pushes auction result + fallback)
-# Consumer: All other agents (read resolution and act accordingly)
-# Message: see MESSAGE_FORMATS.md § resolved_queue
-# ---------------------------------------------------------------------------
-resolved_queue: asyncio.Queue = asyncio.Queue()
+alert_queue = LazyQueue()
+sos_queue = LazyQueue()
+dispatch_queue = LazyQueue()
+resource_update_queue = LazyQueue()
+conflict_queue = LazyQueue()
+resolved_queue = LazyQueue()

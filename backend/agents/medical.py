@@ -53,7 +53,7 @@ from datetime import datetime, timezone
 from backend.database import SessionLocal, Base, engine
 from backend.queues import dispatch_queue, conflict_queue
 from backend.models import SOSEvent, Resource, Mission
-from backend.broadcast import broadcast, EVENT_DISPATCH_ASSIGNED
+from backend.broadcast import broadcast, EVENT_DISPATCH_ASSIGNED, EVENT_RESOURCE_MOVED
 from backend.utils import haversine
 
 logger = logging.getLogger("agent.medical")
@@ -196,7 +196,7 @@ def find_best_medical_resource(sos_lat: float, sos_lng: float,
 # ============================================================================
 # STEP 3 — WRITE MEDICAL DISPATCH TO DATABASE
 # ============================================================================
-def dispatch_medical_resource(sos_event: dict, resource: Resource,
+async def dispatch_medical_resource(sos_event: dict, resource: Resource,
                                vehicle_type: str, distance_km: float, db):
     """
     Persist the medical dispatch to the database.
@@ -228,6 +228,16 @@ def dispatch_medical_resource(sos_event: dict, resource: Resource,
 
     db.commit()
     db.refresh(mission)
+    
+    # Broadcast resource update immediately for live tracking
+    await broadcast(EVENT_RESOURCE_MOVED, {
+        "resource_id": resource.id,
+        "name": resource.name,
+        "new_lat": resource.lat,
+        "new_lng": resource.lng,
+        "new_status": "dispatched",
+        "inventory": resource.inventory_dict()
+    })
     db.refresh(resource)
 
     eta_minutes = calculate_eta(distance_km, vehicle_type)
@@ -279,56 +289,87 @@ async def process_medical_sos(sos_event: dict):
             sos_lat, sos_lng, triage_level, db
         )
 
+        def _build_req(agent_name, evt, dist):
+            return {
+                "agent": agent_name, "type": agent_name,
+                "sos_id": evt.get("sos_id", evt.get("id")),
+                "lives_at_risk": evt.get("people_count", 1),
+                "people_count": evt.get("people_count", 1),
+                "time_to_critical_hours": 1.0,
+                "irreversibility": 1.0 if agent_name == "rescue" else 0.8,
+                "distance_km": dist,
+                "vulnerable_population": evt.get("vulnerable_population", False),
+                "reason": evt.get("injury_description", "Medical emergency")
+            }
+
         # ── 3a. Nothing available ─────────────────────────────────────────
         if resource is None:
             logger.warning(f"No medical resource available for SOS #{sos_id}")
-            await conflict_queue.put({
-                "type":         "no_medical_resource",
-                "sos_event":    sos_event,
-                "triage_level": triage_level,
-                "triage_label": triage_label,
-                "agent":        "medical",
-                "timestamp":    datetime.now(timezone.utc).isoformat() + "Z",
-            })
+            types = MEDICAL_VEHICLE_PRIORITY.get(triage_level, ["medical_team", "truck"])
+            active_mission = db.query(Mission).join(Resource).filter(
+                Resource.type.in_(types),
+                Resource.status == "dispatched",
+                Mission.status.in_(["en_route", "on_site", "evacuating"])
+            ).first()
+            
+            if active_mission:
+                incumbent_sos = db.query(SOSEvent).filter(SOSEvent.id == active_mission.sos_event_id).first()
+                incumbent_res = db.query(Resource).filter(Resource.id == active_mission.resource_id).first()
+                dist_b = haversine(incumbent_res.lat, incumbent_res.lng, incumbent_sos.lat, incumbent_sos.lng)
+                req_b = _build_req("medical", {"sos_id": incumbent_sos.id, "people_count": incumbent_sos.people_count, "injury_description": incumbent_sos.injury_description, "vulnerable_population": incumbent_sos.vulnerable_population}, dist_b)
+                
+                await conflict_queue.put({
+                    "resource_id": incumbent_res.id,
+                    "resource_name": incumbent_res.name,
+                    "request_a": _build_req("medical", sos_event, 15.0),
+                    "request_b": req_b
+                })
+            else:
+                await conflict_queue.put({
+                    "resource_id": -1,
+                    "resource_name": "None",
+                    "request_a": _build_req("medical", sos_event, 15.0),
+                    "request_b": None
+                })
             return
 
         # ── 3b. Race condition re-check ───────────────────────────────────
         db.refresh(resource)
         if resource.status != "available":
-            logger.warning(
-                f"Medical resource '{resource.name}' just taken — "
-                f"raising conflict for SOS #{sos_id}"
-            )
+            logger.warning(f"Medical resource '{resource.name}' just taken — raising conflict for SOS #{sos_id}")
+            active_mission = db.query(Mission).filter(Mission.resource_id == resource.id, Mission.status.in_(["en_route", "on_site", "evacuating"])).first()
+            req_b = None
+            if active_mission:
+                incumbent_sos = db.query(SOSEvent).filter(SOSEvent.id == active_mission.sos_event_id).first()
+                dist_b = haversine(resource.lat, resource.lng, incumbent_sos.lat, incumbent_sos.lng)
+                req_b = _build_req("medical", {"sos_id": incumbent_sos.id, "people_count": incumbent_sos.people_count, "injury_description": incumbent_sos.injury_description, "vulnerable_population": incumbent_sos.vulnerable_population}, dist_b)
+                
             await conflict_queue.put({
-                "type":          "resource_conflict",
-                "sos_event":     sos_event,
-                "triage_level":  triage_level,
-                "resource_id":   resource.id,
+                "resource_id": resource.id,
                 "resource_name": resource.name,
-                "agent":         "medical",
-                "timestamp":     datetime.now(timezone.utc).isoformat() + "Z",
+                "request_a": _build_req("medical", sos_event, distance_km),
+                "request_b": req_b
             })
             return
 
         # ── 4. Dispatch ───────────────────────────────────────────────────
-        mission, eta_minutes = dispatch_medical_resource(
+        mission, eta_minutes = await dispatch_medical_resource(
             sos_event, resource, vehicle_type, distance_km, db
         )
 
         # ── 5. Push to dispatch_queue (Agent 7 SMS) ───────────────────────
         await dispatch_queue.put({
-            "type":          "medical_dispatch_assigned",
             "mission_id":    mission.id,
             "sos_id":        sos_id,
             "resource_id":   resource.id,
             "resource_name": resource.name,
-            "vehicle_type":  vehicle_type,
-            "triage_level":  triage_level,
-            "triage_label":  triage_label,
+            "resource_type": vehicle_type,
+            "phone":         sos_event.get("phone", "+910000000000"),
             "eta_minutes":   eta_minutes,
-            "dest_lat":      sos_lat,
-            "dest_lng":      sos_lng,
-            "timestamp":     datetime.now(timezone.utc).isoformat() + "Z",
+            "shelter_name":  "Nearest Medical Center",
+            "shelter_lat":   sos_lat,
+            "shelter_lng":   sos_lng,
+            "message_template": "Medical help is on the way! {resource_type} {resource_name} arriving in ~{eta_minutes} min.",
         })
 
         # ── 6. Broadcast to React dashboard ───────────────────────────────
@@ -365,7 +406,7 @@ async def handle_resolution_message(resolution: dict):
     Called by rescue_agent's resolution fan-out when Agent 6 resolves a conflict.
     If medical won, re-attempt dispatch with the now-granted resource.
     """
-    if resolution.get("winner_agent") == "medical":
+    if resolution.get("winning_agent") == "medical":
         logger.info("Medical won conflict — re-dispatching")
         await process_medical_sos(resolution.get("sos_event", {}))
     else:

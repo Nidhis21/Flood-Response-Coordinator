@@ -11,6 +11,8 @@ export function DecisionLogPanel() {
 
   // Search & Filter processing
   const filteredLogs = auditLogs.filter((log) => {
+    if (log.event_type !== 'conflict_resolved') return false;
+    
     // 1. Search Query Match
     const matchesSearch = 
       log.explanation?.toLowerCase().includes(searchQuery.toLowerCase()) ||

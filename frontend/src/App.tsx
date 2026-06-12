@@ -9,14 +9,17 @@ import { SOSQueuePanel } from './components/SOSQueuePanel';
 import { ResourceTrackingPanel } from './components/ResourceTrackingPanel';
 import { Agent7LiaisonPanel } from './components/Agent7LiaisonPanel';
 import { DecisionLogPanel } from './components/DecisionLogPanel';
+import { DonationsPanel } from './components/DonationsPanel';
 import { Shield, Radio, AlertOctagon } from 'lucide-react';
 
 export default function App() {
   // 1. Establish real-time sync with fastapi backend
   useWebSocket();
 
-  const { socketConnected, activeConflicts } = useSelector((state: RootState) => state.disaster);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'liaison' | 'log'>('dashboard');
+  const { socketConnected, activeConflicts, alerts } = useSelector((state: RootState) => state.disaster);
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'liaison' | 'log' | 'donations'>('dashboard');
+
+  const currentPhase = alerts.length > 0 && alerts[0].disaster_phase ? alerts[0].disaster_phase.toUpperCase() : 'UNKNOWN';
 
   // Filter for unresolved active conflicts to display EOC warnings
   const pendingConflicts = Object.values(activeConflicts).filter(c => !c.resolved);
@@ -70,6 +73,16 @@ export default function App() {
           >
             Conflict Log
           </button>
+          <button
+            onClick={() => setActiveTab('donations')}
+            className={`px-4 py-1.5 rounded-md text-xs font-semibold tracking-wide transition-colors ${
+              activeTab === 'donations'
+                ? 'bg-cyan-600 text-slate-950 font-bold'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            Donations
+          </button>
         </nav>
 
         {/* Status Indicators */}
@@ -111,7 +124,7 @@ export default function App() {
             {/* Left Panels */}
             <div className="xl:col-span-1 flex flex-col gap-6 overflow-hidden h-full">
               <div className="flex-1 min-h-0">
-                <AlertsPanel />
+                <AlertsPanel onNavigateToLiaison={() => setActiveTab('liaison')} />
               </div>
               <div className="flex-1 min-h-0">
                 <ResourceTrackingPanel />
@@ -146,12 +159,19 @@ export default function App() {
             <DecisionLogPanel />
           </div>
         )}
+
+        {activeTab === 'donations' && (
+          <div className="h-full overflow-hidden">
+            <DonationsPanel />
+          </div>
+        )}
       </main>
 
       {/* 4. FOOTER STATUS BAR */}
       <footer className="bg-slate-900 border-t border-slate-800/80 px-6 py-2 shrink-0 flex justify-between items-center text-[10px] text-slate-500 font-mono">
-        <div>
-          SYS MODE: <span className="text-cyan-500 font-bold">MULTI-AGENT COORDINATOR ONLINE</span>
+        <div className="flex gap-4">
+          <span>SYS MODE: <span className="text-cyan-500 font-bold">MULTI-AGENT COORDINATOR ONLINE</span></span>
+          <span className="border-l border-slate-700 pl-4">DISASTER PHASE: <span className="text-orange-400 font-bold">{currentPhase}</span></span>
         </div>
         <div className="flex gap-4">
           <span>TARGET BASIN: RANGANADI RIVER, LAKHIMPUR</span>

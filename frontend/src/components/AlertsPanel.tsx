@@ -2,7 +2,7 @@ import { useSelector } from 'react-redux';
 import type { RootState } from '../store';
 import { AlertTriangle, Send, ShieldCheck } from 'lucide-react';
 
-export function AlertsPanel() {
+export function AlertsPanel({ onNavigateToLiaison }: { onNavigateToLiaison?: () => void }) {
   const { alerts } = useSelector((state: RootState) => state.disaster);
 
   const getSeverityStyles = (severity: string) => {
@@ -87,14 +87,16 @@ export function AlertsPanel() {
                   </div>
                 </div>
 
-                {/* SMS Broadcast status indicator */}
                 <div className="border-t border-slate-800/30 pt-2 mt-1 flex items-center justify-between text-[9px]">
                   <span className="text-slate-500">SMS Broadcast:</span>
                   {isSevere ? (
-                    <div className="flex items-center gap-1 text-cyan-400 font-semibold uppercase tracking-wider">
+                    <button 
+                      onClick={onNavigateToLiaison}
+                      className="flex items-center gap-1 text-cyan-400 font-semibold uppercase tracking-wider hover:text-cyan-300 transition-colors cursor-pointer outline-none"
+                    >
                       <Send className="w-3 h-3 animate-pulse" />
                       <span>Twilio Broadcast Complete</span>
-                    </div>
+                    </button>
                   ) : (
                     <div className="flex items-center gap-1 text-slate-400">
                       <ShieldCheck className="w-3 h-3" />

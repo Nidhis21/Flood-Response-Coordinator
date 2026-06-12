@@ -100,6 +100,7 @@ def seed():
                 water_stock=3000,
                 medicine_stock=100,
                 status="open",
+                address="NH-15, Main Road, Gogamukh, Lakhimpur 787034"
             ),
             Shelter(
                 name="Sisiborgaon School",
@@ -111,6 +112,7 @@ def seed():
                 water_stock=1500,
                 medicine_stock=50,
                 status="open",
+                address="Near Sisiborgaon Block Office, Lakhimpur 787110"
             ),
         ]
 

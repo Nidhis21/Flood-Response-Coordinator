@@ -11,10 +11,11 @@ import {
   updateResourcePosition,
   addSosEvent,
   assignDispatch,
-  raiseConflict,
-  resolveConflict,
   updateShelter,
-  addSmsSent
+  addSmsSent,
+  setSmsLogs,
+  setVolunteers,
+  setDonations
 } from '../store/slices/disasterSlice';
 
 export function useWebSocket() {
@@ -25,12 +26,15 @@ export function useWebSocket() {
   // 1. Initial State Fetching
   const fetchInitialData = useCallback(async () => {
     try {
-      const [resReq, sheltersReq, alertsReq, sosReq, logsReq] = await Promise.all([
+      const [resReq, sheltersReq, alertsReq, sosReq, logsReq, smsReq, volReq, donReq] = await Promise.all([
         fetch('/api/resources'),
         fetch('/api/shelters'),
         fetch('/api/alerts'),
         fetch('/api/sos'),
-        fetch('/api/audit-log')
+        fetch('/api/audit-log'),
+        fetch('/api/sms'),
+        fetch('/api/volunteers'),
+        fetch('/api/donations')
       ]);
 
       if (resReq.ok) dispatch(setResources(await resReq.json()));
@@ -38,6 +42,9 @@ export function useWebSocket() {
       if (alertsReq.ok) dispatch(setAlerts(await alertsReq.json()));
       if (sosReq.ok) dispatch(setSosQueue(await sosReq.json()));
       if (logsReq.ok) dispatch(setAuditLogs(await logsReq.json()));
+      if (smsReq.ok) dispatch(setSmsLogs(await smsReq.json()));
+      if (volReq.ok) dispatch(setVolunteers(await volReq.json()));
+      if (donReq.ok) dispatch(setDonations(await donReq.json()));
     } catch (err) {
       console.error('Failed to fetch initial disaster data:', err);
     }

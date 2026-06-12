@@ -3,7 +3,7 @@ import type { RootState } from '../store';
 import { Truck, Compass, Shield, Users, Battery } from 'lucide-react';
 
 export function ResourceTrackingPanel() {
-  const { resources } = useSelector((state: RootState) => state.disaster);
+  const { resources, sosQueue } = useSelector((state: RootState) => state.disaster);
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -52,6 +52,8 @@ export function ResourceTrackingPanel() {
               resource.status === 'available' ? '#22d3ee' :
               resource.status === 'dispatched' ? '#eab308' : '#94a3b8';
 
+            const assignedSos = sosQueue.find(sos => sos.assigned_resource_id === resource.id && !['rescued', 'resolved'].includes(sos.status));
+
             return (
               <div key={resource.id} className="p-3 bg-slate-900/40 rounded-lg border border-slate-800/60 flex flex-col gap-2">
                 {/* Header */}
@@ -73,6 +75,12 @@ export function ResourceTrackingPanel() {
                 {/* Details */}
                 <div className="text-[10px] space-y-1 font-mono text-slate-400">
                   <div>GPS: {resource.lat?.toFixed(4)}, {resource.lng?.toFixed(4)}</div>
+                  
+                  {assignedSos && (
+                    <div className="text-emerald-400 bg-emerald-950/20 px-1.5 py-0.5 rounded border border-emerald-900/50 mt-1 inline-block">
+                      ↳ Executing SOS #{assignedSos.id} ({assignedSos.people_count} ppl, {assignedSos.district})
+                    </div>
+                  )}
                   
                   {/* Inventory Summary */}
                   {Object.keys(resource.inventory).length > 0 ? (

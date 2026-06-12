@@ -78,7 +78,7 @@ export function Agent7LiaisonPanel() {
 
       if (res.ok) {
         const data = await res.json();
-        const { classification, confidence } = classifyMessage(inboundBody);
+        const { classification: fallbackClass, confidence: fallbackConf } = classifyMessage(inboundBody);
         
         // Dispatch local SMS Log copy
         dispatch(addSmsInboundSimulated({
@@ -87,8 +87,8 @@ export function Agent7LiaisonPanel() {
           body: inboundBody,
           direction: 'inbound',
           timestamp: new Date().toISOString(),
-          classification,
-          confidence,
+          classification: data.classification || fallbackClass,
+          confidence: data.confidence || fallbackConf,
           status: 'processed',
           sos_id: data.sos_id,
         }));
@@ -110,18 +110,29 @@ export function Agent7LiaisonPanel() {
   };
 
   // Compose outbound SMS and send
-  const handleSendOutbound = (e: React.FormEvent) => {
+  const handleSendOutbound = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!outboundPhone.trim() || !outboundBody.trim()) return;
 
-    // Dispatch to local log
-    dispatch(addSmsSent({
-      phone: outboundPhone,
-      message: outboundBody,
-    }));
+    try {
+      const res = await fetch('/api/twilio/outbound', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ phone: outboundPhone, message: outboundBody }),
+      });
 
-    setOutboundBody('');
-    alert(`SMS sent to ${outboundPhone} via simulated Twilio dispatch.`);
+      if (res.ok) {
+        setOutboundBody('');
+        alert(`SMS queued for dispatch to ${outboundPhone}`);
+      } else {
+        alert('Failed to send SMS via backend.');
+      }
+    } catch (err) {
+      console.error('Error sending outbound SMS:', err);
+      alert('Error connecting to backend API.');
+    }
   };
 
   // Set recipient phone number quickly from queue
@@ -219,66 +230,65 @@ export function Agent7LiaisonPanel() {
         </form>
       </div>
 
-      {/* 2. INBOUND SMS CLASSIFICATION LOG (Center) */}
-      <div className="eoc-card rounded-xl border border-slate-800 p-4 flex flex-col h-full overflow-hidden">
-        <div className="flex items-center gap-2 mb-3 border-b border-slate-800 pb-2">
-          <MessageSquare className="w-5 h-5 text-cyan-400" />
-          <h3 className="font-display font-bold text-sm uppercase tracking-wider text-slate-100">
-            Inbound Classifier Log
-          </h3>
-        </div>
-
-        <div className="flex-1 overflow-y-auto space-y-3 pr-1">
-          {smsLogs.filter(m => m.direction === 'inbound').length === 0 ? (
-            <div className="text-center py-8 text-slate-500 text-xs italic">
-              No inbound SMS logs processed yet. Use simulator to test.
+      {/* 2. MOBILE CONSOLE (Center) */}
+      <div className="flex flex-col h-full overflow-hidden items-center justify-center">
+        {/* Mobile Device Frame */}
+        <div className="relative w-[340px] h-[650px] max-h-full border-[8px] border-slate-800 bg-slate-950 rounded-[2.5rem] shadow-[0_0_40px_-10px_rgba(34,211,238,0.15)] flex flex-col overflow-hidden">
+          {/* Top Notch / Header */}
+          <div className="absolute top-0 inset-x-0 h-6 flex justify-center z-10">
+            <div className="w-28 h-5 bg-slate-800 rounded-b-[1rem]"></div>
+          </div>
+          
+          <div className="bg-slate-900/90 pt-8 pb-3 px-4 border-b border-slate-800 flex items-center justify-between shadow-md">
+            <div className="flex items-center gap-2">
+              <Smartphone className="w-4 h-4 text-cyan-400" />
+              <span className="font-display font-bold text-xs uppercase tracking-wider text-slate-100">Broadcast Comms</span>
             </div>
-          ) : (
-            smsLogs
-              .filter((m) => m.direction === 'inbound')
-              .map((msg) => (
-                <div key={msg.id} className="p-3 bg-slate-950/40 rounded-lg border border-slate-900 flex flex-col gap-2">
-                  <div className="flex justify-between items-start">
-                    <span
-                      onClick={() => handleSelectSurvivorPhone(msg.phone)}
-                      className="text-[10px] font-mono text-cyan-400 font-semibold cursor-pointer hover:underline"
-                    >
-                      {msg.phone}
-                    </span>
-                    <span className="text-[8px] font-mono text-slate-500">
-                      {new Date(msg.timestamp).toLocaleTimeString()}
-                    </span>
+            <span className="text-[9px] text-emerald-400 font-mono tracking-wider animate-pulse font-bold px-1.5 py-0.5 bg-emerald-950/50 rounded border border-emerald-900/50">ONLINE</span>
+          </div>
+
+          {/* Chat List */}
+          <div className="flex-1 overflow-y-auto p-4 space-y-5 bg-slate-950/50 flex flex-col scroll-smooth">
+            {smsLogs.length === 0 ? (
+              <div className="flex-1 flex items-center justify-center text-center p-4">
+                <span className="text-slate-500 text-xs italic font-mono bg-slate-900/50 px-4 py-2 rounded-full border border-slate-800">Awaiting SMS transmissions...</span>
+              </div>
+            ) : (
+              smsLogs.map((msg) => (
+                <div key={msg.id} className={`flex flex-col max-w-[85%] ${msg.direction === 'outbound' ? 'self-end items-end' : 'self-start items-start'}`}>
+                  {/* Bubble */}
+                  <div className={`p-3 rounded-2xl ${msg.direction === 'outbound' ? 'bg-cyan-600 text-white rounded-tr-sm shadow-lg shadow-cyan-900/30' : 'bg-slate-800 text-slate-200 rounded-tl-sm border border-slate-700 shadow-lg shadow-black/20'}`}>
+                    {msg.direction === 'outbound' && (
+                       <div className="flex items-center gap-1.5 mb-1.5 opacity-80 border-b border-cyan-500/30 pb-1">
+                         <Send className="w-2.5 h-2.5" />
+                         <span className="text-[8px] font-bold uppercase tracking-wider">Automated Broadcast</span>
+                       </div>
+                    )}
+                    <p className="text-xs leading-relaxed font-sans whitespace-pre-wrap">{msg.body}</p>
+                    
+                    {/* Inbound Classification Tag */}
+                    {msg.direction === 'inbound' && msg.classification && (
+                      <div className="mt-2 text-[9px] bg-slate-950/60 rounded px-1.5 py-0.5 inline-block text-cyan-300 font-mono border border-slate-700">
+                        {msg.classification}
+                      </div>
+                    )}
                   </div>
-
-                  {/* Classification tag */}
-                  <div className="flex justify-between items-center text-[9px] bg-slate-950/80 p-1 px-1.5 rounded border border-slate-800/50">
-                    <span className="text-slate-400 font-mono">Category:</span>
-                    <span className="font-bold text-cyan-300 font-display uppercase tracking-wider">
-                      {msg.classification || 'SOS Request'}
-                    </span>
-                    <span className="text-slate-500">|</span>
-                    <span className="text-slate-400 font-mono">Conf:</span>
-                    <span className="font-bold font-mono text-emerald-400">
-                      {Math.round((msg.confidence || 0.95) * 100)}%
-                    </span>
+                  
+                  {/* Footer details */}
+                  <div className={`flex items-center gap-2 mt-1.5 px-1 text-[9px] font-mono ${msg.direction === 'outbound' ? 'text-cyan-600/60' : 'text-slate-500'}`}>
+                    <span className="truncate max-w-[140px]" onClick={() => msg.direction === 'inbound' && handleSelectSurvivorPhone(msg.phone)} style={{cursor: msg.direction === 'inbound' ? 'pointer' : 'default'}}>{msg.direction === 'outbound' ? `To: ${msg.phone}` : `From: ${msg.phone}`}</span>
+                    <span>•</span>
+                    <span>{new Date(msg.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
                   </div>
-
-                  <p className="text-xs text-slate-300 italic font-mono bg-slate-950/20 p-2 rounded leading-relaxed border border-slate-900/30">
-                    "{msg.body}"
-                  </p>
-
-                  {/* SOS ID link if parsed */}
-                  {msg.sos_id && (
-                    <div className="text-[8px] font-mono text-slate-500 flex justify-between">
-                      <span>Created Event: SOS #{msg.sos_id}</span>
-                      <span className="text-emerald-400 flex items-center gap-0.5">
-                        <ShieldCheck className="w-2.5 h-2.5" /> Parsed & Queued
-                      </span>
-                    </div>
-                  )}
                 </div>
               ))
-          )}
+            )}
+          </div>
+          
+          {/* Bottom Bar mockup */}
+          <div className="h-7 bg-slate-900 border-t border-slate-800 flex items-center justify-center">
+            <div className="w-24 h-1 bg-slate-600 rounded-full"></div>
+          </div>
         </div>
       </div>
 

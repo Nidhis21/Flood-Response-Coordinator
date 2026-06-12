@@ -22,7 +22,7 @@ from langgraph.prebuilt import create_react_agent
 
 from backend.database import SessionLocal
 from backend.models import FloodAlert, AuditLog, Shelter
-from backend.queues import alert_queue
+from backend.queues import alert_queue, dispatch_queue
 from backend.broadcast import broadcast, EVENT_FLOOD_ALERT
 from backend.utils import rational_model, haversine
 from backend.agents.perception_data import WeatherReading, RiverReading, DamDischarge, CitizenReport
@@ -599,6 +599,25 @@ async def run():
                     f"Alert #{alert.id} saved — "
                     f"Severity: {alert.severity.upper()}, FHI: {alert.fhi_score}"
                 )
+
+                # ── Automated Mass Broadcast for Severe Alerts ─────────────────
+                if alert.severity in ["high", "critical"]:
+                    dummy_phones = ["+919876543211", "+919876543212", "+919876543213"]
+                    circles_str = ", ".join(prediction["affected_circles"])
+                    arrival_val = prediction.get('arrival_hours', 'N/A')
+                    arrival_str = f"{arrival_val:.1f}" if isinstance(arrival_val, (int, float)) else str(arrival_val)
+                    broadcast_msg = f"EOC FLOOD ALERT ({alert.severity.upper()}): Immediate danger in {circles_str}. Move to higher ground or assigned shelters now. ETA: {arrival_str} hours."
+                    
+                    for phone in dummy_phones:
+                        await dispatch_queue.put({
+                            "phone": phone,
+                            "message_template": broadcast_msg,
+                            "resource_type": "broadcast",
+                            "resource_name": "EOC",
+                            "eta_minutes": 0,
+                            "sos_id": -1
+                        })
+                    logger.info(f"Pushed mass broadcast for {len(dummy_phones)} citizens to dispatch_queue.")
 
             except Exception as db_err:
                 logger.error(f"DB error in Prediction Agent: {db_err}")
