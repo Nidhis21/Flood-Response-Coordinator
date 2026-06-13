@@ -56,6 +56,7 @@ EVENT_CONFLICT_RAISED = "conflict_raised"
 EVENT_CONFLICT_RESOLVED = "conflict_resolved"
 EVENT_SHELTER_UPDATED = "shelter_updated"
 EVENT_SMS_SENT = "sms_sent"
+EVENT_DONATION_UPDATED = "donation_updated"
 
 # ── Connected WebSocket clients ──────────────────────────────────────────
 connected_clients: set[WebSocket] = set()

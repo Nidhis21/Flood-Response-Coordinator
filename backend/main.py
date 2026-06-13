@@ -28,19 +28,19 @@ from fastapi import FastAPI, Depends, WebSocket, WebSocketDisconnect, Form
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
-from langchain_google_genai import ChatGoogleGenerativeAI
+from twilio.rest import Client
+from langchain_groq import ChatGroq
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 
 from backend.database import engine, get_db, Base
 from backend.models import Resource, Shelter, SOSEvent, FloodAlert, AuditLog, SMSLog, RegisteredCitizen, Donation
-from backend.broadcast import connected_clients, broadcast, EVENT_SOS_CREATED
-from backend.queues import sos_queue
-from backend.queues import sos_queue
+from backend.broadcast import connected_clients, broadcast, EVENT_SOS_CREATED, EVENT_DONATION_UPDATED
+from backend.queues import sos_queue, conflict_queue
 from backend.seed import seed
 from backend.agents.orchestrator import orchestrator
 
-load_dotenv()
+load_dotenv(override=True)
 logger = logging.getLogger("main")
 
 OFFLINE_MODE = os.getenv("OFFLINE_MODE", "true").lower() == "true"
@@ -87,6 +87,25 @@ app.add_middleware(
 
 
 # ── REST Endpoints ────────────────────────────────────────────────────────
+
+@app.get("/api/sms")
+def get_sms_logs(db: Session = Depends(get_db)):
+    """Fetch recent SMS logs for the Liaison Console."""
+    logs = db.query(SMSLog).order_by(SMSLog.id.desc()).limit(1000).all()
+    logs = list(reversed(logs))
+    return [
+        {
+            "id": str(log.id),
+            "phone": log.phone,
+            "body": log.message,
+            "direction": log.direction,
+            "timestamp": log.created_at.isoformat() if log.created_at else datetime.now(timezone.utc).isoformat(),
+            "classification": log.sms_type
+        }
+        for log in logs
+    ]
+
+
 
 
 @app.get("/api/resources")
@@ -414,7 +433,7 @@ async def twilio_inbound(
                 injury: str = Field(description="Description of emergency, donation details, or injury")
                 classification: str = Field(description="One of: SOS Rescue, SOS Medical, Shelter Request, Supply Request, Blockage Report, Water Level, Donation Offer")
             
-            llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", temperature=0)
+            llm = ChatGroq(model="llama-3.1-8b-instant", temperature=0)
             parser = PydanticOutputParser(pydantic_object=SMSParseResult)
             prompt = PromptTemplate(
                 template="Parse the following flood emergency SMS.\n{format_instructions}\nSMS: {sms}",
@@ -454,7 +473,9 @@ async def twilio_inbound(
             Donation.status.in_(["offered", "pending_details"])
         ).first()
         
-        if not existing_donation:
+        has_details = len(Body) > 30 or (lat != 27.23 and lng != 94.10)
+        
+        if not existing_donation and not has_details:
             # First turn: create pending donation
             new_d = Donation(
                 donor_phone=From,
@@ -466,6 +487,20 @@ async def twilio_inbound(
             )
             db.add(new_d)
             db.commit()
+            db.refresh(new_d)
+            
+            await broadcast(EVENT_DONATION_UPDATED, {
+                "id": new_d.id,
+                "donor_phone": new_d.donor_phone,
+                "donor_name": new_d.donor_name,
+                "donation_type": new_d.donation_type,
+                "quantity": new_d.quantity,
+                "description": new_d.description,
+                "status": new_d.status,
+                "assigned_truck_id": new_d.assigned_truck_id,
+                "pickup_lat": new_d.pickup_lat,
+                "pickup_lng": new_d.pickup_lng
+            })
             
             await dispatch_queue.put({
                 "phone": From,
@@ -477,8 +512,22 @@ async def twilio_inbound(
             })
             return {"status": "donation_pending", "classification": classification}
         else:
-            # Second turn: update donation with details and assign truck
-            existing_donation.description = f"{existing_donation.description} | Update: {Body}"
+            # Second turn (or 1-turn with details): update donation and assign truck
+            if not existing_donation:
+                existing_donation = Donation(
+                    donor_phone=From,
+                    donor_name="Unknown SMS Donor",
+                    donation_type="supplies",
+                    quantity=people_count if people_count > 1 else 1,
+                    description=injury if injury else Body,
+                    status="offered"
+                )
+                db.add(existing_donation)
+                db.commit()
+                db.refresh(existing_donation)
+            else:
+                existing_donation.description = f"{existing_donation.description} | Update: {Body}"
+                
             existing_donation.pickup_lat = lat
             existing_donation.pickup_lng = lng
             
@@ -493,6 +542,20 @@ async def twilio_inbound(
                 msg = "Confirmed! We have logged your donation but all trucks are currently busy. We will contact you soon."
                 
             db.commit()
+            db.refresh(existing_donation)
+
+            await broadcast(EVENT_DONATION_UPDATED, {
+                "id": existing_donation.id,
+                "donor_phone": existing_donation.donor_phone,
+                "donor_name": existing_donation.donor_name,
+                "donation_type": existing_donation.donation_type,
+                "quantity": existing_donation.quantity,
+                "description": existing_donation.description,
+                "status": existing_donation.status,
+                "assigned_truck_id": existing_donation.assigned_truck_id,
+                "pickup_lat": existing_donation.pickup_lat,
+                "pickup_lng": existing_donation.pickup_lng
+            })
             
             await dispatch_queue.put({
                 "phone": From,
@@ -542,6 +605,7 @@ async def twilio_inbound(
         "district": sos.district,
         "people_count": people_count,
         "triage_level": sos.triage_level,
+        "injury_description": injury,
     })
 
     logger.info(f"SOS #{sos.id} created from {From}")
@@ -570,6 +634,69 @@ async def twilio_outbound(req: OutboundSMSRequest):
         "sos_id": -1,
     })
     return {"status": "queued"}
+
+@app.post("/api/test/conflict")
+async def trigger_test_conflict(type: str = Form(...)):
+    """Trigger a simulated conflict for testing."""
+    if type == "logistics_vs_rescue":
+        await conflict_queue.put({
+            "resource_id": 2, 
+            "resource_name": "Truck T1",
+            "request_a": {
+                "agent": "logistics", "type": "logistics",
+                "sos_id": 999,
+                "lives_at_risk": 50,
+                "people_count": 50,
+                "time_to_critical_hours": 2.0,
+                "irreversibility": 0.4,
+                "distance_km": 10.0,
+                "vulnerable_population": False,
+                "reason": "Urgent supplies needed at Gogamukh Shelter"
+            },
+            "request_b": {
+                "agent": "rescue", "type": "rescue",
+                "sos_id": 1000,
+                "lives_at_risk": 5,
+                "people_count": 5,
+                "time_to_critical_hours": 0.5,
+                "irreversibility": 1.0,
+                "distance_km": 5.0,
+                "vulnerable_population": True,
+                "reason": "Family trapped on submerged roof"
+            }
+        })
+        return {"status": "conflict_triggered"}
+    
+    if type == "medical_vs_rescue":
+        await conflict_queue.put({
+            "resource_id": 4, 
+            "resource_name": "Boat B1",
+            "request_a": {
+                "agent": "medical", "type": "medical",
+                "sos_id": 997,
+                "lives_at_risk": 1,
+                "people_count": 1,
+                "time_to_critical_hours": 0.5,
+                "irreversibility": 1.0,
+                "distance_km": 8.0,
+                "vulnerable_population": True,
+                "reason": "Severe snakebite, needs immediate antivenom"
+            },
+            "request_b": {
+                "agent": "rescue", "type": "rescue",
+                "sos_id": 998,
+                "lives_at_risk": 12,
+                "people_count": 12,
+                "time_to_critical_hours": 1.5,
+                "irreversibility": 1.0,
+                "distance_km": 4.0,
+                "vulnerable_population": False,
+                "reason": "Group trapped in village hall"
+            }
+        })
+        return {"status": "conflict_triggered"}
+
+    return {"status": "unknown_type"}
 
 # ── WebSocket ─────────────────────────────────────────────────────────────
 

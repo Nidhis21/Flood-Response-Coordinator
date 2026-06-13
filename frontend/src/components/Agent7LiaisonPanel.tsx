@@ -64,6 +64,7 @@ export function Agent7LiaisonPanel() {
     e.preventDefault();
     if (!inboundBody.trim()) return;
 
+    const messageTimestamp = new Date().toISOString();
     setSimulating(true);
     try {
       const formData = new FormData();
@@ -86,7 +87,7 @@ export function Agent7LiaisonPanel() {
           phone: inboundPhone,
           body: inboundBody,
           direction: 'inbound',
-          timestamp: new Date().toISOString(),
+          timestamp: messageTimestamp,
           classification: data.classification || fallbackClass,
           confidence: data.confidence || fallbackConf,
           status: 'processed',
@@ -227,6 +228,37 @@ export function Agent7LiaisonPanel() {
               ))}
             </div>
           </div>
+
+          {/* Test Conflict Resolution */}
+          <div className="pt-3 border-t border-slate-800/40">
+            <span className="text-[9px] font-mono text-amber-400/80 block mb-2">
+              TRIGGER SIMULATED CONFLICT:
+            </span>
+            <div className="flex flex-col gap-1.5">
+              <button
+                type="button"
+                onClick={async () => {
+                  const fd = new FormData(); fd.append('type', 'logistics_vs_rescue');
+                  await fetch('/api/test/conflict', { method: 'POST', body: fd });
+                  alert("Triggered Logistics vs Rescue conflict! Watch the Decision Log.");
+                }}
+                className="bg-amber-950/30 border border-amber-900/50 hover:bg-amber-900/50 hover:border-amber-500/50 rounded p-1.5 text-[10px] text-center text-amber-200 font-semibold transition-colors"
+              >
+                Logistics vs Rescue
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  const fd = new FormData(); fd.append('type', 'medical_vs_rescue');
+                  await fetch('/api/test/conflict', { method: 'POST', body: fd });
+                  alert("Triggered Medical vs Rescue conflict! Watch the Decision Log.");
+                }}
+                className="bg-amber-950/30 border border-amber-900/50 hover:bg-amber-900/50 hover:border-amber-500/50 rounded p-1.5 text-[10px] text-center text-amber-200 font-semibold transition-colors"
+              >
+                Medical vs Rescue
+              </button>
+            </div>
+          </div>
         </form>
       </div>
 
@@ -254,7 +286,7 @@ export function Agent7LiaisonPanel() {
                 <span className="text-slate-500 text-xs italic font-mono bg-slate-900/50 px-4 py-2 rounded-full border border-slate-800">Awaiting SMS transmissions...</span>
               </div>
             ) : (
-              smsLogs.map((msg) => (
+              [...smsLogs].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()).map((msg) => (
                 <div key={msg.id} className={`flex flex-col max-w-[85%] ${msg.direction === 'outbound' ? 'self-end items-end' : 'self-start items-start'}`}>
                   {/* Bubble */}
                   <div className={`p-3 rounded-2xl ${msg.direction === 'outbound' ? 'bg-cyan-600 text-white rounded-tr-sm shadow-lg shadow-cyan-900/30' : 'bg-slate-800 text-slate-200 rounded-tl-sm border border-slate-700 shadow-lg shadow-black/20'}`}>

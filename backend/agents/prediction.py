@@ -15,8 +15,8 @@ import math
 import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
-
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_groq import ChatGroq
 from langchain_core.tools import tool
 from langgraph.prebuilt import create_react_agent
 
@@ -28,7 +28,7 @@ from backend.utils import rational_model, haversine
 from backend.agents.perception_data import WeatherReading, RiverReading, DamDischarge, CitizenReport
 
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(override=True)
 
 logger = logging.getLogger("agent.prediction")
 
@@ -417,13 +417,16 @@ def fhi_outputs_node(state: PredictionState) -> dict:
 
 
 def explanation_node(state: PredictionState) -> dict:
-    use_llm = bool(GEMINI_API_KEY and GEMINI_API_KEY != "your-gemini-api-key-here")
+    GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+    use_llm = True
+    if not GROQ_API_KEY or GROQ_API_KEY == "your-groq-api-key-here":
+        logger.warning("No GROQ_API_KEY found. Prediction Agent will run in fast offline math mode.")
+        use_llm = False
     
     if use_llm:
         try:
-            llm = ChatGoogleGenerativeAI(
-                model="gemini-2.0-flash",
-                google_api_key=GEMINI_API_KEY,
+            llm = ChatGroq(
+                model="llama-3.1-8b-instant",
                 temperature=0,
             )
             

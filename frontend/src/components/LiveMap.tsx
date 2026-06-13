@@ -138,8 +138,9 @@ export function LiveMap() {
     };
   }, [hasMapboxToken, mapboxToken]);
 
-  // Update map content when data changes
+  // Update map content when data changes (debounced to prevent flicker)
   useEffect(() => {
+    const debounceTimer = setTimeout(() => {
     const severityColors = {
       low: '#10b981',      // Green
       moderate: '#f97316', // Orange
@@ -172,43 +173,83 @@ export function LiveMap() {
         });
       }
 
-      // 3. Draw prediction zones (Alerts)
-      alerts.forEach((alert, alertIdx) => {
-        const color = severityColors[alert.severity] || '#3b82f6';
+      // 3. Draw prediction zones (Alerts) (Grouped to prevent opacity stacking)
+      const latestAlertsByCircle: Record<string, any> = {};
+      alerts.forEach((alert) => {
         alert.affected_circles.forEach((circleName) => {
-          const coords = CIRCLE_COORDS[circleName];
-          if (coords) {
-            const radiusKm = alert.severity === 'critical' ? 4 : alert.severity === 'high' ? 3 : 2;
-            const sourceId = `alert-${alertIdx}-${circleName}`;
-            const circleGeoJSON = createGeoJSONCircle([coords[1], coords[0]], radiusKm);
-
-            map.addSource(sourceId, {
-              type: 'geojson',
-              data: circleGeoJSON as any,
-            });
-
-            map.addLayer({
-              id: `${sourceId}-fill`,
-              type: 'fill',
-              source: sourceId,
-              paint: {
-                'fill-color': color,
-                'fill-opacity': 0.15,
-              },
-            });
-
-            map.addLayer({
-              id: `${sourceId}-stroke`,
-              type: 'line',
-              source: sourceId,
-              paint: {
-                'line-color': color,
-                'line-width': 1.5,
-                'line-dasharray': [3, 3],
-              },
-            });
-          }
+          latestAlertsByCircle[circleName] = alert; // Overwrite with the latest alert for this circle
         });
+      });
+
+      Object.entries(latestAlertsByCircle).forEach(([circleName, alert], alertIdx) => {
+        const color = severityColors[alert.severity as keyof typeof severityColors] || '#3b82f6';
+        const coords = CIRCLE_COORDS[circleName];
+        if (coords) {
+          const radiusKm = alert.severity === 'critical' ? 4 : alert.severity === 'high' ? 3 : 2;
+          const sourceId = `alert-${alertIdx}-${circleName}`;
+          const circleGeoJSON = createGeoJSONCircle([coords[1], coords[0]], radiusKm);
+
+          map.addSource(sourceId, {
+            type: 'geojson',
+            data: circleGeoJSON as any,
+          });
+
+          map.addLayer({
+            id: `${sourceId}-fill`,
+            type: 'fill',
+            source: sourceId,
+            paint: {
+              'fill-color': color,
+              'fill-opacity': 0.35,
+            },
+          });
+
+          map.addLayer({
+            id: `${sourceId}-stroke`,
+            type: 'line',
+            source: sourceId,
+            paint: {
+              'line-color': color,
+              'line-width': 2,
+              'line-dasharray': [3, 3],
+            },
+          });
+
+          // Add Click Event for Popup Explanation
+          map.on('click', `${sourceId}-fill`, (e) => {
+            const explanationHTML = alert.structured_explanation ? `
+              <div class="mt-2 space-y-2 border-t border-slate-800 pt-2">
+                <div><span class="text-slate-400 font-semibold block mb-0.5">Reason:</span><span class="text-slate-200 italic text-xs leading-snug">"${alert.structured_explanation.reason}"</span></div>
+                <div><span class="text-slate-400 font-semibold block mb-0.5">Timeframe:</span><span class="text-orange-400 font-bold text-xs">${alert.structured_explanation.timeframe}</span></div>
+                <div><span class="text-slate-400 font-semibold block mb-0.5">Action:</span><span class="text-cyan-400 font-mono text-[10px] leading-tight block">${alert.structured_explanation.recommendation}</span></div>
+              </div>
+            ` : '';
+
+            const popupContent = `
+              <div class="p-2 text-slate-100 font-sans min-w-[220px] max-w-[280px]">
+                <div class="flex items-center gap-2 mb-2 border-b border-slate-800 pb-2">
+                  <span class="w-3 h-3 rounded-full animate-pulse" style="background-color: ${color}"></span>
+                  <span class="font-bold uppercase tracking-wider text-sm">${alert.severity} Risk</span>
+                </div>
+                <h4 class="text-sm font-bold text-slate-200 mb-1">${circleName} Circle</h4>
+                <div class="text-[10px] text-slate-400 font-mono mb-2">
+                  <div>Flood Hazard Index: ${alert.fhi_score?.toFixed(2) || '0.00'}</div>
+                  <div>River Discharge: ${alert.discharge_q || '0'} m³/s</div>
+                </div>
+                ${explanationHTML}
+              </div>
+            `;
+            
+            new mapboxgl.Popup({ className: 'mapbox-custom-popup', maxWidth: '300px' })
+              .setLngLat(e.lngLat)
+              .setHTML(popupContent)
+              .addTo(map);
+          });
+
+          // Change cursor on hover to indicate clickability
+          map.on('mouseenter', `${sourceId}-fill`, () => { map.getCanvas().style.cursor = 'pointer'; });
+          map.on('mouseleave', `${sourceId}-fill`, () => { map.getCanvas().style.cursor = ''; });
+        }
       });
 
       // 4. Draw Shelters
@@ -313,36 +354,40 @@ export function LiveMap() {
 
         mapboxMarkersRef.current.push(marker);
 
-        // Draw active rescue lines
+        // Draw active rescue lines (only within ~50km to prevent off-screen stretching)
         if (sos.status === 'assigned' && sos.assigned_resource_id) {
           const assignedRes = resources[sos.assigned_resource_id];
-          if (assignedRes) {
-            const sourceId = `line-sos-${sos.id}`;
-            map.addSource(sourceId, {
-              type: 'geojson',
-              data: {
-                type: 'Feature',
-                properties: {},
-                geometry: {
-                  type: 'LineString',
-                  coordinates: [
-                    [assignedRes.lng, assignedRes.lat],
-                    [sos.lng, sos.lat],
-                  ],
+          if (assignedRes && assignedRes.status === 'dispatched') {
+            const latDiff = Math.abs(assignedRes.lat - sos.lat);
+            const lngDiff = Math.abs(assignedRes.lng - sos.lng);
+            if (latDiff < 0.5 && lngDiff < 0.5) {
+              const sourceId = `line-sos-${sos.id}`;
+              map.addSource(sourceId, {
+                type: 'geojson',
+                data: {
+                  type: 'Feature',
+                  properties: {},
+                  geometry: {
+                    type: 'LineString',
+                    coordinates: [
+                      [assignedRes.lng, assignedRes.lat],
+                      [sos.lng, sos.lat],
+                    ],
+                  },
                 },
-              },
-            });
+              });
 
-            map.addLayer({
-              id: `${sourceId}-layer`,
-              type: 'line',
-              source: sourceId,
-              paint: {
-                'line-color': '#06b6d4',
-                'line-width': 2,
-                'line-dasharray': [3, 3],
-              },
-            });
+              map.addLayer({
+                id: `${sourceId}-layer`,
+                type: 'line',
+                source: sourceId,
+                paint: {
+                  'line-color': '#06b6d4',
+                  'line-width': 2,
+                  'line-dasharray': [3, 3],
+                },
+              });
+            }
           }
         }
       });
@@ -553,12 +598,17 @@ export function LiveMap() {
         if (sos.status === 'assigned' && sos.assigned_resource_id) {
           const assignedRes = resources[sos.assigned_resource_id];
           if (assignedRes) {
-            L.polyline([[assignedRes.lat, assignedRes.lng], [sos.lat, sos.lng]], {
-              color: '#06b6d4',
-              weight: 2,
-              opacity: 0.8,
-              dashArray: '6, 6',
-            }).addTo(linesGroup);
+            // Only draw dispatch line if resource is within ~50km of SOS
+            const latDiff = Math.abs(assignedRes.lat - sos.lat);
+            const lngDiff = Math.abs(assignedRes.lng - sos.lng);
+            if (latDiff < 0.5 && lngDiff < 0.5) {
+              L.polyline([[assignedRes.lat, assignedRes.lng], [sos.lat, sos.lng]], {
+                color: '#06b6d4',
+                weight: 2,
+                opacity: 0.8,
+                dashArray: '6, 6',
+              }).addTo(linesGroup);
+            }
           }
         }
       });
@@ -620,6 +670,9 @@ export function LiveMap() {
           .addTo(markerGroup);
       });
     }
+    }, 500); // 500ms debounce to prevent map flicker
+
+    return () => clearTimeout(debounceTimer);
   }, [resources, shelters, sosQueue, alerts, hasMapboxToken, mapboxStyleLoaded]);
 
   return (

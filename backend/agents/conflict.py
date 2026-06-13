@@ -4,14 +4,16 @@ import logging
 import asyncio
 from datetime import datetime, timezone
 
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_groq import ChatGroq
 from langchain_core.tools import tool
 from langgraph.prebuilt import create_react_agent
 
 from backend.database import SessionLocal
 from backend.models import AuditLog, Resource, FloodAlert, SOSEvent, Mission
-from backend.queues import conflict_queue, resolved_queue
+from backend.queues import conflict_queue, resolved_queue, dispatch_queue
 from backend.broadcast import broadcast, EVENT_CONFLICT_RESOLVED
+
+CURRENT_CONFLICT = {}
 from backend.prompts import CONFLICT_RESOLUTION_SYSTEM_PROMPT
 from backend.utils import run_priority_auction as auction_math
 
@@ -74,8 +76,8 @@ async def send_resolution(
         log = AuditLog(
             event_type="conflict_resolved",
             agent_name="conflict_resolution",
-            request_a=json.dumps({"sos_id": winning_sos_id, "agent": winning_agent}),
-            request_b=json.dumps({"sos_id": losing_sos_id, "agent": loser_agent}),
+            request_a=json.dumps(CURRENT_CONFLICT.get("req_a", {"sos_id": winning_sos_id, "agent": winning_agent})),
+            request_b=json.dumps(CURRENT_CONFLICT.get("req_b", {"sos_id": losing_sos_id, "agent": loser_agent})),
             score_a=score_winner,
             score_b=score_loser,
             winner=winning_agent,
@@ -100,7 +102,7 @@ async def send_resolution(
         "sms_to_officer": sms_to_officer,
         "timestamp": datetime.now(timezone.utc).isoformat() + "Z",
     }
-    
+    logger.warning(f"send_resolution called! Winner: {winning_agent}, Fallback: {fallback_plan}")
     await resolved_queue.put(payload)
     await broadcast(EVENT_CONFLICT_RESOLVED, payload)
     
@@ -127,18 +129,20 @@ async def run():
     """Main loop for the Conflict Resolution Agent."""
     logger.info("Conflict Resolution Agent started")
     
-    GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-    if not GEMINI_API_KEY or GEMINI_API_KEY == "your-gemini-api-key-here":
-        logger.warning("No GEMINI_API_KEY found. Conflict Agent will run in offline deterministic mode.")
+    GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+    if not GROQ_API_KEY or GROQ_API_KEY == "your-groq-api-key-here":
+        logger.warning("No GROQ_API_KEY found. Conflict Agent will run in offline deterministic mode.")
         agent = None
     else:
-        llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", temperature=0)
+        llm = ChatGroq(model="llama-3.1-8b-instant", temperature=0)
         tools = [run_priority_auction, find_fallback_resource, send_resolution]
-        agent = create_react_agent(llm, tools, state_modifier=CONFLICT_RESOLUTION_SYSTEM_PROMPT)
+        agent = create_react_agent(llm, tools, prompt=CONFLICT_RESOLUTION_SYSTEM_PROMPT)
 
+    print("Conflict Agent started loop!")
     while True:
         try:
             conflict_data = await conflict_queue.get()
+            print(f"Got conflict data: {conflict_data.get('resource_name')}")
             resource_id = conflict_data.get("resource_id", -1)
             resource_name = conflict_data.get("resource_name", "Unknown")
             req_a = conflict_data.get("request_a")
@@ -181,8 +185,15 @@ async def run():
                 conflict_queue.task_done()
                 continue
 
-            logger.info(f"Evaluating conflict for resource {resource_name}: SOS #{req_a.get('sos_id')} vs SOS #{req_b.get('sos_id')}")
+            print(f"Evaluating conflict for resource {resource_name}: SOS #{req_a.get('sos_id')} vs SOS #{req_b.get('sos_id')}")
 
+            CURRENT_CONFLICT["req_a"] = win_req if (agent is None and req_a.get("sos_id") == win_req.get("sos_id")) else req_a
+            CURRENT_CONFLICT["req_b"] = lose_req if (agent is None and req_b.get("sos_id") == lose_req.get("sos_id")) else req_b
+
+            # We will assign the correct winner/loser to req_a/req_b after LLM resolves it.
+            # But the UI expects request_a to be the winner and request_b to be the loser.
+            # Wait, the LLM sets winning_sos_id. We can swap them in send_resolution!
+            
             if agent:
                 message = (
                     f"Conflict over resource {resource_name} (ID {resource_id}).\n"
@@ -191,7 +202,18 @@ async def run():
                     f"Request B: {json.dumps(req_b)}"
                 )
                 try:
-                    await agent.ainvoke({"messages": [("user", message)]})
+                    logger.warning("Invoking LangGraph agent...")
+                    for attempt in range(3):
+                        try:
+                            res = await agent.ainvoke({"messages": [("user", message)]})
+                            logger.warning(f"LangGraph agent finished! Output: {res}")
+                            break
+                        except Exception as e:
+                            if "429" in str(e) and attempt < 2:
+                                logger.warning(f"Rate limit hit! Waiting 20 seconds before retry {attempt + 1}/3...")
+                                await asyncio.sleep(20)
+                            else:
+                                raise e
                 except Exception as e:
                     logger.error(f"LangGraph execution failed: {e}")
                     # Fallback to deterministic
@@ -209,6 +231,17 @@ async def run():
                     "lat": 27.2, "lng": 94.1
                 })
                 
+                fallback_name = "Waitlisted" if "error" in fallback else f"Assigned {fallback.get('resource_name')}"
+                
+                reason = (
+                    f"⚠️ [Deterministic Offline Mode] "
+                    f"The {win_req.get('agent').capitalize()} Agent secured the resource over the {lose_req.get('agent').capitalize()} Agent. "
+                    f"Using the mathematical priority auction (Score: {res['score_a']} vs {res['score_b']}), "
+                    f"priority was granted to {win_req.get('agent').capitalize()} based on critical evaluation of lives at risk, "
+                    f"time to irreversibility, and distance. The {lose_req.get('agent').capitalize()} Agent's request has been "
+                    f"diverted to fallback plan: {fallback_name}."
+                )
+
                 await send_resolution.ainvoke({
                     "winning_agent": win_req.get("agent"),
                     "winning_sos_id": win_req.get("sos_id"),
@@ -216,8 +249,8 @@ async def run():
                     "losing_sos_id": lose_req.get("sos_id"),
                     "resource_id": resource_id,
                     "resource_name": resource_name,
-                    "reason": f"[OFFLINE] Score {res['score_a']} vs {res['score_b']}",
-                    "fallback_plan": "Waitlisted" if "error" in fallback else f"Assigned {fallback.get('resource_name')}",
+                    "reason": reason,
+                    "fallback_plan": fallback_name,
                     "score_winner": res["score_a"] if winner_is_a else res["score_b"],
                     "score_loser": res["score_b"] if winner_is_a else res["score_a"],
                     "sms_to_loser": "Your request is waitlisted. Help is delayed.",

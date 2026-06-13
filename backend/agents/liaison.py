@@ -94,8 +94,11 @@ async def run():
             eta = dispatch.get("eta_minutes", 0)
             sos_id = dispatch.get("sos_id")
             
+            # Format resource type beautifully (e.g. "medical_team" -> "Medical Team")
+            formatted_type = str(resource_type).replace("_", " ").title()
+            
             # Safe replacement
-            message = msg_template.replace("{resource_type}", str(resource_type)) \
+            message = msg_template.replace("{resource_type}", formatted_type) \
                                   .replace("{resource_name}", str(resource_name)) \
                                   .replace("{eta_minutes}", str(eta))
             

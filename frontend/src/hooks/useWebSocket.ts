@@ -15,7 +15,8 @@ import {
   addSmsSent,
   setSmsLogs,
   setVolunteers,
-  setDonations
+  setDonations,
+  addOrUpdateDonation
 } from '../store/slices/disasterSlice';
 
 export function useWebSocket() {
@@ -95,6 +96,7 @@ export function useWebSocket() {
               lng: data.lng,
               people_count: data.people_count,
               triage_level: data.triage_level,
+              injury_description: data.injury_description,
               status: 'pending',
               created_at: new Date().toISOString()
             }));
@@ -113,6 +115,9 @@ export function useWebSocket() {
             break;
           case 'sms_sent':
             dispatch(addSmsSent(data));
+            break;
+          case 'donation_updated':
+            dispatch(addOrUpdateDonation(data));
             break;
           default:
             console.warn(`Unknown WebSocket event type: ${eventType}`);

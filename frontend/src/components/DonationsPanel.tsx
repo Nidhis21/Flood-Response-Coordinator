@@ -108,7 +108,7 @@ export function DonationsPanel() {
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {donations.map((donation) => (
+            {donations.filter(d => !['offered', 'pending_details'].includes(d.status)).map((donation) => (
               <div key={donation.id} className="p-4 bg-slate-950/60 rounded-lg border border-slate-800 flex flex-col gap-3">
                 <div className="flex justify-between items-start">
                   <div className="flex items-center gap-3">

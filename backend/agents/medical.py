@@ -133,11 +133,9 @@ def needs_medical(sos_event: dict) -> bool:
 
     if event_type in ("medical", "medical_only"):
         return True
-    if triage <= 3:
-        return True
+        
+    # If it's a rescue event, ONLY dispatch medical if there are clear medical keywords
     if any(word in description for word in MEDICAL_KEYWORDS):
-        return True
-    if people_count >= 5:
         return True
 
     return False

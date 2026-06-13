@@ -204,6 +204,14 @@ const disasterSlice = createSlice({
     setDonations(state, action: PayloadAction<Donation[]>) {
       state.donations = action.payload;
     },
+    addOrUpdateDonation(state, action: PayloadAction<Donation>) {
+      const idx = state.donations.findIndex(d => d.id === action.payload.id);
+      if (idx !== -1) {
+        state.donations[idx] = action.payload;
+      } else {
+        state.donations.unshift(action.payload);
+      }
+    },
 
     // WebSocket / Real-time Updates
     updateFloodAlert(state, action: PayloadAction<Partial<FloodAlert> & { district: string }>) {
@@ -401,6 +409,7 @@ export const {
   addSmsInboundSimulated,
   setVolunteers,
   setDonations,
+  addOrUpdateDonation,
 } = disasterSlice.actions;
 
 export default disasterSlice.reducer;

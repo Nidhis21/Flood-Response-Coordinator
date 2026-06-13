@@ -4,7 +4,7 @@ import logging
 import asyncio
 from datetime import datetime, timezone
 
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_groq import ChatGroq
 from langchain_core.tools import tool
 from langgraph.prebuilt import create_react_agent
 
@@ -135,14 +135,14 @@ async def run():
     """Main loop for the Logistics Agent."""
     logger.info("Logistics Agent started")
     
-    GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-    if not GEMINI_API_KEY or GEMINI_API_KEY == "your-gemini-api-key-here":
-        logger.warning("No GEMINI_API_KEY found. Logistics Agent running in offline mode.")
+    GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+    if not GROQ_API_KEY or GROQ_API_KEY == "your-groq-api-key-here":
+        logger.warning("No GROQ_API_KEY found. Logistics Agent running in offline mode.")
         agent = None
     else:
-        llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", temperature=0)
+        llm = ChatGroq(model="llama-3.1-8b-instant", temperature=0)
         tools = [move_resource, update_shelter_status, escalate_conflict, send_logistics_sms, write_logistics_audit, load_inventory]
-        agent = create_react_agent(llm, tools, state_modifier=LOGISTICS_SYSTEM_PROMPT)
+        agent = create_react_agent(llm, tools, prompt=LOGISTICS_SYSTEM_PROMPT)
 
     last_alert_id = 0
 

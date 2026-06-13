@@ -3,7 +3,7 @@ import type { RootState } from '../store';
 import { Truck, Compass, Shield, Users, Battery } from 'lucide-react';
 
 export function ResourceTrackingPanel() {
-  const { resources, sosQueue } = useSelector((state: RootState) => state.disaster);
+  const { resources, sosQueue, donations } = useSelector((state: RootState) => state.disaster);
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -52,7 +52,13 @@ export function ResourceTrackingPanel() {
               resource.status === 'available' ? '#22d3ee' :
               resource.status === 'dispatched' ? '#eab308' : '#94a3b8';
 
-            const assignedSos = sosQueue.find(sos => sos.assigned_resource_id === resource.id && !['rescued', 'resolved'].includes(sos.status));
+            const assignedSos = resource.status === 'dispatched' 
+              ? sosQueue.find(sos => sos.assigned_resource_id === resource.id && !['rescued', 'resolved'].includes(sos.status)) 
+              : null;
+
+            const assignedDonation = resource.status === 'dispatched'
+              ? donations?.find(don => don.assigned_truck_id === resource.id && don.status === 'collected')
+              : null;
 
             return (
               <div key={resource.id} className="p-3 bg-slate-900/40 rounded-lg border border-slate-800/60 flex flex-col gap-2">
@@ -77,8 +83,14 @@ export function ResourceTrackingPanel() {
                   <div>GPS: {resource.lat?.toFixed(4)}, {resource.lng?.toFixed(4)}</div>
                   
                   {assignedSos && (
-                    <div className="text-emerald-400 bg-emerald-950/20 px-1.5 py-0.5 rounded border border-emerald-900/50 mt-1 inline-block">
+                    <div className="text-emerald-400 bg-emerald-950/20 px-1.5 py-0.5 rounded border border-emerald-900/50 mt-1 inline-block text-[9px]">
                       ↳ Executing SOS #{assignedSos.id} ({assignedSos.people_count} ppl, {assignedSos.district})
+                    </div>
+                  )}
+
+                  {assignedDonation && (
+                    <div className="text-purple-400 bg-purple-950/20 px-1.5 py-0.5 rounded border border-purple-900/50 mt-1 inline-block text-[9px]">
+                      ↳ Executing Donation Pickup ({assignedDonation.quantity} {assignedDonation.donation_type})
                     </div>
                   )}
                   
