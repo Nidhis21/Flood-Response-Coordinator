@@ -414,7 +414,7 @@ async def handle_sos_message(sos_event: dict):
     """
     event_type = sos_event.get("type", "general").lower()
 
-    if event_type in ("rescue", "evacuation", "trapped", "general"):
+    if event_type in ("rescue", "evacuation", "trapped"):
         await process_sos_event(sos_event)
     else:
         logger.debug(f"Rescue Agent skipping type='{event_type}'")

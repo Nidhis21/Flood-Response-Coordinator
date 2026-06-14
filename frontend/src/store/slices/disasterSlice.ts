@@ -355,25 +355,29 @@ const disasterSlice = createSlice({
       state.auditLogs.unshift(logEntry);
     },
 
-    updateShelter(state, action: PayloadAction<{
-      shelter_id: number;
-      name: string;
-      current_occupancy: number;
-      food_stock: number;
-      water_stock: number;
-    }>) {
-      const { shelter_id, current_occupancy, food_stock, water_stock } = action.payload;
-      if (state.shelters[shelter_id]) {
-        state.shelters[shelter_id].current_occupancy = current_occupancy;
-        state.shelters[shelter_id].food_stock = food_stock;
-        state.shelters[shelter_id].water_stock = water_stock;
-        
-        // Auto update status based on occupancy
-        const pct = (current_occupancy / state.shelters[shelter_id].capacity) * 100;
+    updateShelter(state, action: PayloadAction<any>) {
+      const data = action.payload;
+      const id = data.id || data.shelter_id;
+      if (!id) return;
+
+      if (!state.shelters[id]) {
+        // It's a new shelter, add it completely
+        state.shelters[id] = { ...data, id };
+      } else {
+        // Update existing shelter
+        if (data.current_occupancy !== undefined) state.shelters[id].current_occupancy = data.current_occupancy;
+        if (data.food_stock !== undefined) state.shelters[id].food_stock = data.food_stock;
+        if (data.water_stock !== undefined) state.shelters[id].water_stock = data.water_stock;
+      }
+      
+      // Auto update status based on occupancy
+      const shelter = state.shelters[id];
+      if (shelter && shelter.capacity > 0) {
+        const pct = (shelter.current_occupancy / shelter.capacity) * 100;
         if (pct >= 100) {
-          state.shelters[shelter_id].status = 'full';
+          shelter.status = 'full';
         } else if (pct > 0) {
-          state.shelters[shelter_id].status = 'open';
+          shelter.status = 'open';
         }
       }
     },

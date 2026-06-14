@@ -71,12 +71,12 @@ async def send_sms(to_phone: str, message: str, sms_type: str, sos_id: int = Non
 
     # Broadcast to dashboard
     await broadcast(EVENT_SMS_SENT, {
-        "id": log_id,
+        "id": str(log_id),
         "direction": "outbound",
         "phone": to_phone,
         "body": message,
         "status": status,
-        "timestamp": datetime.now(timezone.utc).isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat() + "Z"
     })
 
 

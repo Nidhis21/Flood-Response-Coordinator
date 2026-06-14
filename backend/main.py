@@ -99,7 +99,7 @@ def get_sms_logs(db: Session = Depends(get_db)):
             "phone": log.phone,
             "body": log.message,
             "direction": log.direction,
-            "timestamp": log.created_at.isoformat() if log.created_at else datetime.now(timezone.utc).isoformat(),
+            "timestamp": log.created_at.isoformat() + "Z" if log.created_at else datetime.now(timezone.utc).isoformat(),
             "classification": log.sms_type
         }
         for log in logs
@@ -220,7 +220,7 @@ async def create_shelter(shelter_data: ShelterCreate, db: Session = Depends(get_
         "phone": log_entry.phone,
         "body": log_entry.message,
         "direction": log_entry.direction,
-        "timestamp": log_entry.created_at.isoformat() if log_entry.created_at else datetime.now(timezone.utc).isoformat(),
+        "timestamp": log_entry.created_at.isoformat() + "Z" if log_entry.created_at else datetime.now(timezone.utc).isoformat(),
         "classification": "Shelter Request",
         "confidence": 1.0,
         "status": log_entry.delivery_status,
@@ -450,10 +450,17 @@ async def twilio_inbound(
             logger.info(f"Gemini parsed free-text SMS: {classification} with {people_count} people")
         except Exception as e:
             logger.error(f"NLP fallback failed: {e}")
-            classification = "general"
-            if "donate" in Body.lower() or "donation" in Body.lower():
+            body_lower = Body.lower()
+            if any(w in body_lower for w in ["donate", "donation", "offer", "giving", "give"]):
                 classification = "Donation Offer"
+            elif any(w in body_lower for w in ["heart", "sick", "blood", "medical", "ambulance", "injured", "hurt"]):
+                classification = "SOS Medical"
+            elif any(w in body_lower for w in ["trapped", "stuck", "roof", "drown", "rescue", "boat", "help", "stranded"]):
+                classification = "SOS Rescue"
+            elif any(w in body_lower for w in ["food", "water", "supply", "supplies", "hungry", "thirsty"]):
+                classification = "Supply Request"
             else:
+                classification = "general"
                 # Check if there is a pending donation for this number
                 pending = db.query(Donation).filter(
                     Donation.donor_phone == From, 
@@ -567,7 +574,43 @@ async def twilio_inbound(
             })
             return {"status": "donation_confirmed", "classification": classification}
 
-    # Create SOS event in DB
+    # Non-Donation Intent Routing
+    from backend.queues import dispatch_queue
+    from backend.utils import haversine
+    
+    if classification == "Shelter Request":
+        open_shelters = db.query(Shelter).filter(Shelter.status == "open", Shelter.current_occupancy < Shelter.capacity).all()
+        if open_shelters:
+            open_shelters.sort(key=lambda s: haversine(s.lat, s.lng, lat, lng))
+            best_shelter = open_shelters[0]
+            dist = haversine(best_shelter.lat, best_shelter.lng, lat, lng)
+            msg = f"The nearest open shelter is {best_shelter.name} at {best_shelter.address} ({dist:.1f} km away). Capacity available: {best_shelter.capacity - best_shelter.current_occupancy}."
+        else:
+            msg = "Currently, there are no open emergency shelters with available capacity in your area. Please seek high ground."
+        
+        await dispatch_queue.put({
+            "phone": From,
+            "message_template": msg,
+            "resource_type": "Liaison",
+            "resource_name": "EOC Automation",
+            "eta_minutes": 0,
+            "sos_id": None
+        })
+        return {"status": "shelter_info_sent", "classification": classification}
+
+    if classification == "Supply Request":
+        msg = "Your request for supplies has been logged. Our Logistics team is monitoring the area and routing resources."
+        await dispatch_queue.put({
+            "phone": From,
+            "message_template": msg,
+            "resource_type": "Liaison",
+            "resource_name": "EOC Automation",
+            "eta_minutes": 0,
+            "sos_id": None
+        })
+        return {"status": "supply_request_logged", "classification": classification}
+
+    # Create SOS event in DB (only for Rescue, Medical, general, Blockage, etc.)
     sos = SOSEvent(
         phone=From,
         lat=lat,

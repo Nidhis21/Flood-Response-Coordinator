@@ -300,7 +300,13 @@ export function Agent7LiaisonPanel() {
                     
                     {/* Inbound Classification Tag */}
                     {msg.direction === 'inbound' && msg.classification && (
-                      <div className="mt-2 text-[9px] bg-slate-950/60 rounded px-1.5 py-0.5 inline-block text-cyan-300 font-mono border border-slate-700">
+                      <div className={`mt-2 text-[9px] bg-slate-950/60 rounded px-1.5 py-0.5 inline-block font-mono border border-slate-700 uppercase tracking-wider ${
+                        msg.classification.toLowerCase().includes('medical') ? 'text-red-400 border-red-500/30 bg-red-500/10' :
+                        msg.classification.toLowerCase().includes('rescue') ? 'text-orange-400 border-orange-500/30 bg-orange-500/10' :
+                        msg.classification.toLowerCase().includes('donation') ? 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10' :
+                        msg.classification.toLowerCase().includes('supply') ? 'text-amber-400 border-amber-500/30 bg-amber-500/10' :
+                        'text-cyan-300'
+                      }`}>
                         {msg.classification}
                       </div>
                     )}
