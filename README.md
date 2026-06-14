@@ -73,7 +73,7 @@ graph TD
 | Component | Technology | Description |
 |-----------|-----------|-------------|
 | **Backend** | `FastAPI` + `Uvicorn` | High-performance async Python framework. |
-| **Agent Logic** | `LangGraph` + `Gemini` | ReAct agents utilizing tool-use and LLM reasoning. |
+| **Agent Logic** | `LangGraph` + `Groq` | ReAct agents utilizing tool-use and fast Llama-3.1 LLM reasoning. |
 | **Database** | `SQLite` + `SQLAlchemy` | Lightweight, single-file relational database. |
 | **Messaging** | `asyncio.Queue` | Internal memory queues for ultra-fast inter-agent comms. |
 | **Real-time** | `WebSockets` | Pushes live state changes from the backend to the UI. |
@@ -89,7 +89,7 @@ graph TD
 - Python 3.10+
 - Node.js 18+
 - Twilio Account (for live SMS, optional)
-- Gemini API Key
+- Groq API Key
 
 ### 2. Installation
 Clone the repository and install the backend dependencies:
@@ -103,7 +103,7 @@ pip install -r requirements.txt
 # Set up environment variables
 cp .env.example .env
 ```
-*Edit the `.env` file to include your `GEMINI_API_KEY`. Leave `OFFLINE_MODE=true` if you do not want to configure Twilio yet.*
+*Edit the `.env` file to include your `GROQ_API_KEY`. Leave `OFFLINE_MODE=true` if you do not want to configure Twilio yet.*
 
 ### 3. Database Seeding
 Initialize the SQLite database with the geographical data, shelters, and resources for the Lakhimpur district:
